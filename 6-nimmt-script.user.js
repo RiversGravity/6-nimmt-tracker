@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
-// @version      1.0.9
+// @version      1.1.0
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -368,11 +368,18 @@
     meta.order = orderList;
 
     let myId = gd?.playerid ?? gd?.player_id ?? gd?.playerId ?? gd?.current_player_id ?? gd?.currentPlayerId ?? null;
-    if (!myId && typeof g_game !== 'undefined') {
-      myId = g_game?.player_id ?? g_game?.playerid ?? null;
-    }
-    if (!myId && typeof gameui !== 'undefined') {
-      myId = gameui?.player_id ?? gameui?.playerid ?? null;
+    if (!myId) {
+      const scope = (typeof window !== 'undefined')
+        ? window
+        : (typeof self !== 'undefined') ? self : {};
+
+      const gGame = scope.g_game;
+      if (gGame) myId = gGame.player_id ?? gGame.playerid ?? null;
+
+      if (!myId) {
+        const gameUi = scope.gameui;
+        if (gameUi) myId = gameUi.player_id ?? gameUi.playerid ?? null;
+      }
     }
     if (myId != null) {
       meta.myId = String(myId);
