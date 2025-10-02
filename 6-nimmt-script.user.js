@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         6-Nimmt-Script
+// @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.1.2
+// @version      1.1.3
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -18,7 +18,7 @@
   'use strict';
 
   // ---------- Build / constants ----------
-  const BUILD_STAMP = '2025-10-02T18:10:00Z';
+  const BUILD_STAMP = '2025-10-02T19:05:00Z';
   const CARD_COUNT = 104;
   const TABLE_ID = (location.href.match(/table=(\d+)/)?.[1] || 'global');
 
@@ -1020,12 +1020,14 @@
   }
 
   // ---------- Solver / ISMCTS ----------
+  // === Coordination & lifecycle ===
   function clearSolverCache() {
     if (solverCoordinator) {
       solverCoordinator.reset();
     }
   }
 
+  // === Shared placement heuristics (mirrored in worker) ===
   const BULL_HEADS = (() => {
     const arr = new Array(CARD_COUNT + 1).fill(1);
     arr[0] = 0;
@@ -1197,6 +1199,7 @@
     return result;
   }
 
+  // === State inference helpers ===
   function deriveInitialHandSize(state) {
     if (!state) return null;
     if (Number.isFinite(state.initialHandCount)) return state.initialHandCount;
@@ -1352,6 +1355,7 @@
     return arr;
   }
 
+  // === Simulation & playout ===
   function sampleDeterminization(state, rng = Math.random) {
     if (!state) return null;
     const opponents = (state.players || []).filter(p => !p.isYou);
@@ -1684,6 +1688,19 @@
     return { results, best, iterations: completed };
   }
 
+  /**
+   * Inline worker source builder.
+   *
+   * Helpers mirrored inside this string literal must stay in lockstep with the
+   * main-thread implementations defined above: `getBullHeads`,
+   * `sumRowBullHeads`, `findRowForCard`, `resolvePlacement`,
+   * `applyPlacementAndScore`, `deriveInitialHandSize`,
+   * `computeRemainingForPlayer`, `createRng`, `shuffleInPlace`,
+   * `sampleDeterminization`, `previewPlacement`, `chooseCardUniform`,
+   * `simulatePlayout`, `createNode`, `selectChild`, `flushProgress`,
+   * `recordDelta`, and `runIterations`. When adding new shared logic, update the
+   * shared helper section first and mirror the changes here before stringifying.
+   */
   function buildSolverWorkerSource() {
     return `
 'use strict';
