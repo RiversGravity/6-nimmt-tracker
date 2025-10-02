@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.9
+// @version      1.3.0
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1798,8 +1798,55 @@
     }
 
     if (shortage) return null;
-    pool.sort((a, b) => a - b);
-    return { hands, pool };
+
+    if (pool.length) {
+      const assignFallback = (card) => {
+        const candidates = [];
+        const belief = beliefs ? beliefs[card] : null;
+        for (const w of wants) {
+          if (!w) continue;
+          const knowledge = knowledgeSets[w.id];
+          if (knowledge?.forbid && knowledge.forbid.has(card)) continue;
+          let weight = 1;
+          if (belief && belief[w.id] != null) {
+            const val = Number(belief[w.id]);
+            if (Number.isFinite(val) && val > 0) weight = val;
+          }
+          if (!(weight > 0)) weight = 1e-3;
+          candidates.push({ target: w, weight });
+        }
+        if (!candidates.length) return;
+        let total = 0;
+        for (const cand of candidates) total += cand.weight;
+        if (!(total > 0)) total = candidates.length;
+        let pick = rng() * total;
+        if (!Number.isFinite(pick)) pick = total * 0.5;
+        let chosen = candidates[candidates.length - 1].target;
+        for (const cand of candidates) {
+          pick -= cand.weight;
+          if (pick <= 0) {
+            chosen = cand.target;
+            break;
+          }
+        }
+        const list = (hands[chosen.id] ||= []);
+        list.push(card);
+      };
+
+      while (pool.length) {
+        const card = pool.pop();
+        assignFallback(card);
+      }
+    }
+
+    for (const id of Object.keys(hands)) {
+      const list = hands[id];
+      if (Array.isArray(list) && list.length > 1) {
+        list.sort((a, b) => a - b);
+      }
+    }
+
+    return { hands, pool: [] };
   }
 
   function previewPlacement(rows, card) {
@@ -2538,8 +2585,55 @@ function sampleDeterminization(state, rng) {
   }
 
   if (shortage) return null;
-  pool.sort((a, b) => a - b);
-  return { hands, pool };
+
+  if (pool.length) {
+    const assignFallback = (card) => {
+      const candidates = [];
+      const belief = beliefs ? beliefs[card] : null;
+      for (const w of wants) {
+        if (!w) continue;
+        const knowledge = knowledgeSets[w.id];
+        if (knowledge?.forbid && knowledge.forbid.has(card)) continue;
+        let weight = 1;
+        if (belief && belief[w.id] != null) {
+          const val = Number(belief[w.id]);
+          if (Number.isFinite(val) && val > 0) weight = val;
+        }
+        if (!(weight > 0)) weight = 1e-3;
+        candidates.push({ target: w, weight });
+      }
+      if (!candidates.length) return;
+      let total = 0;
+      for (const cand of candidates) total += cand.weight;
+      if (!(total > 0)) total = candidates.length;
+      let pick = rng() * total;
+      if (!Number.isFinite(pick)) pick = total * 0.5;
+      let chosen = candidates[candidates.length - 1].target;
+      for (const cand of candidates) {
+        pick -= cand.weight;
+        if (pick <= 0) {
+          chosen = cand.target;
+          break;
+        }
+      }
+      const list = (hands[chosen.id] ||= []);
+      list.push(card);
+    };
+
+    while (pool.length) {
+      const card = pool.pop();
+      assignFallback(card);
+    }
+  }
+
+  for (const id in hands) {
+    const list = hands[id];
+    if (Array.isArray(list) && list.length > 1) {
+      list.sort((a, b) => a - b);
+    }
+  }
+
+  return { hands, pool: [] };
 }
 function previewPlacement(rows, card) {
   const placement = findRowForCard(rows, card);
