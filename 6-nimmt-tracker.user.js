@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.8
+// @version      1.2.9
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -3760,19 +3760,29 @@ self.onmessage = (event) => {
       if (solverInfo && Number.isFinite(solverInfo.visits) && solverInfo.visits > 0) {
         const visits = solverInfo.visits;
         const totalReward = Number.isFinite(solverInfo.totalReward) ? solverInfo.totalReward : null;
-        const totalImmediate = Number.isFinite(solverInfo.totalImmediate) ? solverInfo.totalImmediate : 0;
-        const totalFuture = Number.isFinite(solverInfo.totalFuture) ? solverInfo.totalFuture : 0;
-        const expectedNow = visits ? (totalImmediate / visits) : null;
-        const expectedLater = visits ? (totalFuture / visits) : null;
+        const totalImmediateRaw = Number.isFinite(solverInfo.totalImmediate) ? solverInfo.totalImmediate : null;
+        const totalFutureRaw = Number.isFinite(solverInfo.totalFuture) ? solverInfo.totalFuture : null;
+        const expectedNow = (totalImmediateRaw != null) ? (totalImmediateRaw / visits) : null;
+        const expectedLater = (totalFutureRaw != null) ? (totalFutureRaw / visits) : null;
         let expectedTotal = null;
         if (totalReward != null) {
           expectedTotal = -(totalReward / visits);
-        } else if (Number.isFinite(expectedNow) || Number.isFinite(expectedLater)) {
-          expectedTotal = (Number.isFinite(expectedNow) ? expectedNow : 0) + (Number.isFinite(expectedLater) ? expectedLater : 0);
+        }
+        if (!Number.isFinite(expectedTotal) && (Number.isFinite(expectedNow) || Number.isFinite(expectedLater))) {
+          const nowVal = Number.isFinite(expectedNow) ? expectedNow : 0;
+          const laterVal = Number.isFinite(expectedLater) ? expectedLater : 0;
+          expectedTotal = nowVal + laterVal;
+        }
+        let resolvedNow = Number.isFinite(expectedNow) ? expectedNow : null;
+        let resolvedLater = Number.isFinite(expectedLater) ? expectedLater : null;
+        if (!Number.isFinite(resolvedNow) && Number.isFinite(expectedTotal) && Number.isFinite(resolvedLater)) {
+          resolvedNow = expectedTotal - resolvedLater;
+        } else if (!Number.isFinite(resolvedLater) && Number.isFinite(expectedTotal) && Number.isFinite(resolvedNow)) {
+          resolvedLater = expectedTotal - resolvedNow;
         }
         entry.visits = visits;
-        entry.expectedNow = Number.isFinite(expectedNow) ? expectedNow : null;
-        entry.expectedLater = Number.isFinite(expectedLater) ? expectedLater : null;
+        entry.expectedNow = Number.isFinite(resolvedNow) ? resolvedNow : null;
+        entry.expectedLater = Number.isFinite(resolvedLater) ? resolvedLater : null;
         if (Number.isFinite(expectedTotal)) {
           entry.expectedTotal = expectedTotal;
           if (expectedTotal < bestEv) bestEv = expectedTotal;
@@ -3822,20 +3832,17 @@ self.onmessage = (event) => {
 
     const formatEv = (value) => {
       if (!Number.isFinite(value)) return '—';
-      const abs = Math.abs(value);
-      if (abs > 0 && abs < 0.005) return '<0.01';
-      if (abs < 10) return value.toFixed(2);
-      return value.toFixed(1);
+      return value.toFixed(3);
     };
 
-    let html = `<table><thead><tr><th>Card</th><th>EV&nbsp;Now</th><th>EV&nbsp;Later</th><th>EV&nbsp;Total</th><th>Samples</th><th>Undercut&nbsp;#</th></tr></thead><tbody>`;
+    let html = `<table><thead><tr><th>Card</th><th>EV&nbsp;Total</th><th>EV&nbsp;Now</th><th>EV&nbsp;Later</th><th>Samples</th><th>Undercut&nbsp;#</th></tr></thead><tbody>`;
     for (const row of sorted) {
       const cls = highlight.has(row.card) ? ' class="best-card"' : '';
+  const evTotalStr = formatEv(row.expectedTotal);
   const evNowStr = formatEv(row.expectedNow);
   const evLaterStr = formatEv(row.expectedLater);
-  const evTotalStr = formatEv(row.expectedTotal);
   const samplesStr = row.visits > 0 ? row.visits : '—';
-      html += `<tr${cls}><td>${row.card}</td><td>${evNowStr}</td><td>${evLaterStr}</td><td>${evTotalStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
+      html += `<tr${cls}><td>${row.card}</td><td>${evTotalStr}</td><td>${evNowStr}</td><td>${evLaterStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
     }
     html += '</tbody></table>';
 
