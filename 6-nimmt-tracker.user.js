@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.0
+// @version      1.3.1
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1418,7 +1418,9 @@
       }
     }
 
-    placement = placement || findRowForCard(rows, card);
+    if (!placement || !Number.isFinite(placement.rowIdx)) {
+      placement = findRowForCard(rows, card);
+    }
     const nextRows = [];
     for (let i = 0; i < rows.length; i++) {
       nextRows.push(rows[i] ? rows[i].slice() : []);
@@ -1883,7 +1885,7 @@
       });
     }
     return {
-      forcedTake: placement.forcedTake,
+      ...placement,
       options
     };
   }
@@ -2349,7 +2351,9 @@ function resolvePlacement(rows, card, forcedRowIdxOrOpts) {
     }
   }
 
-  placement = placement || findRowForCard(rows, card);
+  if (!placement || !Number.isFinite(placement.rowIdx)) {
+    placement = findRowForCard(rows, card);
+  }
   const nextRows = [];
   for (let i = 0; i < rows.length; i++) {
     nextRows.push(rows[i] ? rows[i].slice() : []);
@@ -2669,7 +2673,7 @@ function previewPlacement(rows, card) {
     });
   }
   return {
-    forcedTake: placement.forcedTake,
+    ...placement,
     options
   };
 }
