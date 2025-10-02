@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1463,19 +1463,100 @@
     };
   }
 
-  function chooseCardUniform(hand, rows, rng) {
+  function evaluateCardPlacement(rows, card) {
+    const placement = previewPlacement(rows, card);
+    const options = placement?.options || [];
+    if (!options.length) return null;
+
+    let bestOption = null;
+    let bestScore = Infinity;
+    for (const opt of options) {
+      const row = rows?.[opt.rowIdx] || [];
+      const rowLen = row.length || 0;
+      let score = Number.isFinite(opt.bulls) ? opt.bulls : 0;
+
+      if (opt.forcedTake) {
+        score += 8 + rowLen * 0.25;
+      } else {
+        const diff = Number.isFinite(opt.diff) ? opt.diff : 0;
+        score += diff * 0.015;
+        if (rowLen >= 4) score += 1.35;
+        else if (rowLen === 0) score -= 0.4;
+        else if (rowLen === 1) score -= 0.15;
+        score += rowLen * 0.05;
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestOption = opt;
+      }
+    }
+
+    return bestOption ? { placement, bestOption, score: bestScore } : null;
+  }
+
+  function pickForcedRowIndex(placement, rows) {
+    const options = placement?.options || [];
+    if (!options.length) return null;
+
+    let bestIdx = null;
+    let bestScore = Infinity;
+    for (const opt of options) {
+      if (!Number.isFinite(opt.rowIdx)) continue;
+      const row = rows?.[opt.rowIdx] || [];
+      const bulls = Number.isFinite(opt.bulls) ? opt.bulls : 0;
+      const rowLen = row.length || 0;
+      const tail = row[row.length - 1];
+      let score = bulls + rowLen * 0.05;
+      if (Number.isFinite(tail)) score += tail * 0.001;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = opt.rowIdx;
+      }
+    }
+
+    return Number.isFinite(bestIdx) ? bestIdx : null;
+  }
+
+  function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     if (!hand || !hand.length) return null;
-    const legal = [];
+    const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.12;
+    const scored = [];
+
     for (let i = 0; i < hand.length; i++) {
       const card = hand[i];
-      const options = previewPlacement(rows, card)?.options || [];
-      if (options.length) legal.push(card);
+      const evalInfo = evaluateCardPlacement(rows, card);
+      if (!evalInfo) continue;
+      const jitter = (rng() - 0.5) * 0.001;
+      scored.push({ card, score: evalInfo.score + jitter });
     }
-    if (!legal.length) return null;
-    let pick = Math.floor(rng() * legal.length);
-    if (!Number.isFinite(pick) || pick < 0) pick = 0;
-    if (pick >= legal.length) pick = legal.length - 1;
-    return legal[pick];
+
+    if (!scored.length) return null;
+
+    scored.sort((a, b) => {
+      if (a.score !== b.score) return a.score - b.score;
+      return a.card - b.card;
+    });
+
+    const bestScore = scored[0].score;
+    const tolerance = 0.12;
+    const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
+
+    let pickEntry;
+    if (rng() < epsilon && scored.length > 1) {
+      const span = Math.min(4, scored.length);
+      let idx = Math.floor(rng() * span);
+      if (!Number.isFinite(idx) || idx < 0) idx = 0;
+      if (idx >= scored.length) idx = scored.length - 1;
+      pickEntry = scored[idx];
+    } else {
+      let idx = Math.floor(rng() * topGroup.length);
+      if (!Number.isFinite(idx) || idx < 0) idx = 0;
+      if (idx >= topGroup.length) idx = topGroup.length - 1;
+      pickEntry = topGroup[idx];
+    }
+
+    return pickEntry ? pickEntry.card : null;
   }
 
   function simulatePlayout(state, determinization, rootCard, rng) {
@@ -1523,14 +1604,14 @@
             card = rootCard;
             forcedCardPending = false;
           } else if (hand.length) {
-            card = chooseCardUniform(hand, rows, rng);
+            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08 });
             if (card != null) {
               const idx = hand.indexOf(card);
               if (idx >= 0) hand.splice(idx, 1);
             }
           }
         } else if (hand.length) {
-          card = chooseCardUniform(hand, rows, rng);
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.18 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
@@ -1550,19 +1631,10 @@
       });
 
       for (const play of plays) {
-        const placement = findRowForCard(rows, play.card);
+        const placement = previewPlacement(rows, play.card);
         let forcedRowIdx = null;
         if (placement?.forcedTake) {
-          const forced = placement.forcedOptions || [];
-          if (forced.length === 1) {
-            forcedRowIdx = forced[0]?.rowIdx ?? null;
-          } else if (forced.length > 1) {
-            let pick = Math.floor(rng() * forced.length);
-            if (!Number.isFinite(pick) || pick < 0) pick = 0;
-            if (pick >= forced.length) pick = forced.length - 1;
-            forcedRowIdx = forced[pick]?.rowIdx ?? null;
-          }
-          if (!Number.isFinite(forcedRowIdx)) forcedRowIdx = null;
+          forcedRowIdx = pickForcedRowIndex(placement, rows);
         }
 
         const res = applyPlacementAndScore(
@@ -1696,7 +1768,8 @@
    * `sumRowBullHeads`, `findRowForCard`, `resolvePlacement`,
    * `applyPlacementAndScore`, `deriveInitialHandSize`,
    * `computeRemainingForPlayer`, `createRng`, `shuffleInPlace`,
-   * `sampleDeterminization`, `previewPlacement`, `chooseCardUniform`,
+  * `sampleDeterminization`, `previewPlacement`, `evaluateCardPlacement`,
+  * `pickForcedRowIndex`, `chooseCardHeuristic`,
    * `simulatePlayout`, `createNode`, `selectChild`, `flushProgress`,
    * `recordDelta`, and `runIterations`. When adding new shared logic, update the
    * shared helper section first and mirror the changes here before stringifying.
@@ -2023,19 +2096,98 @@ function previewPlacement(rows, card) {
     options
   };
 }
-function chooseCardUniform(hand, rows, rng) {
+function evaluateCardPlacement(rows, card) {
+  const placement = previewPlacement(rows, card);
+  const options = placement?.options || [];
+  if (!options.length) return null;
+
+  let bestOption = null;
+  let bestScore = Infinity;
+  for (const opt of options) {
+    const row = rows?.[opt.rowIdx] || [];
+    const rowLen = row.length || 0;
+    let score = Number.isFinite(opt.bulls) ? opt.bulls : 0;
+
+    if (opt.forcedTake) {
+      score += 8 + rowLen * 0.25;
+    } else {
+      const diff = Number.isFinite(opt.diff) ? opt.diff : 0;
+      score += diff * 0.015;
+      if (rowLen >= 4) score += 1.35;
+      else if (rowLen === 0) score -= 0.4;
+      else if (rowLen === 1) score -= 0.15;
+      score += rowLen * 0.05;
+    }
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestOption = opt;
+    }
+  }
+
+  return bestOption ? { placement, bestOption, score: bestScore } : null;
+}
+function pickForcedRowIndex(placement, rows) {
+  const options = placement?.options || [];
+  if (!options.length) return null;
+
+  let bestIdx = null;
+  let bestScore = Infinity;
+  for (const opt of options) {
+    if (!Number.isFinite(opt.rowIdx)) continue;
+    const row = rows?.[opt.rowIdx] || [];
+    const bulls = Number.isFinite(opt.bulls) ? opt.bulls : 0;
+    const rowLen = row.length || 0;
+    const tail = row[row.length - 1];
+    let score = bulls + rowLen * 0.05;
+    if (Number.isFinite(tail)) score += tail * 0.001;
+    if (score < bestScore) {
+      bestScore = score;
+      bestIdx = opt.rowIdx;
+    }
+  }
+
+  return Number.isFinite(bestIdx) ? bestIdx : null;
+}
+function chooseCardHeuristic(hand, rows, rng, opts = {}) {
   if (!hand || !hand.length) return null;
-  const legal = [];
+  const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.12;
+  const scored = [];
+
   for (let i = 0; i < hand.length; i++) {
     const card = hand[i];
-    const options = previewPlacement(rows, card)?.options || [];
-    if (options.length) legal.push(card);
+    const evalInfo = evaluateCardPlacement(rows, card);
+    if (!evalInfo) continue;
+    const jitter = (rng() - 0.5) * 0.001;
+    scored.push({ card, score: evalInfo.score + jitter });
   }
-  if (!legal.length) return null;
-  let pick = Math.floor(rng() * legal.length);
-  if (!Number.isFinite(pick) || pick < 0) pick = 0;
-  if (pick >= legal.length) pick = legal.length - 1;
-  return legal[pick];
+
+  if (!scored.length) return null;
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    return a.card - b.card;
+  });
+
+  const bestScore = scored[0].score;
+  const tolerance = 0.12;
+  const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
+
+  let pickEntry;
+  if (rng() < epsilon && scored.length > 1) {
+    const span = Math.min(4, scored.length);
+    let idx = Math.floor(rng() * span);
+    if (!Number.isFinite(idx) || idx < 0) idx = 0;
+    if (idx >= scored.length) idx = scored.length - 1;
+    pickEntry = scored[idx];
+  } else {
+    let idx = Math.floor(rng() * topGroup.length);
+    if (!Number.isFinite(idx) || idx < 0) idx = 0;
+    if (idx >= topGroup.length) idx = topGroup.length - 1;
+    pickEntry = topGroup[idx];
+  }
+
+  return pickEntry ? pickEntry.card : null;
 }
 function simulatePlayout(state, determinization, rootCard, rng) {
   if (!state || !Array.isArray(state.rows) || !state.rows.length) return null;
@@ -2077,24 +2229,24 @@ function simulatePlayout(state, determinization, rootCard, rng) {
     for (const id of players) {
       const hand = hands.get(id) || [];
       let card = null;
-      if (id === myId) {
-        if (forcedCardPending) {
-          card = rootCard;
-          forcedCardPending = false;
+        if (id === myId) {
+          if (forcedCardPending) {
+            card = rootCard;
+            forcedCardPending = false;
+          } else if (hand.length) {
+            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08 });
+            if (card != null) {
+              const idx = hand.indexOf(card);
+              if (idx >= 0) hand.splice(idx, 1);
+            }
+          }
         } else if (hand.length) {
-          card = chooseCardUniform(hand, rows, rng);
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.18 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
           }
         }
-      } else if (hand.length) {
-        card = chooseCardUniform(hand, rows, rng);
-        if (card != null) {
-          const idx = hand.indexOf(card);
-          if (idx >= 0) hand.splice(idx, 1);
-        }
-      }
       if (card != null) {
         plays.push({ playerId: id, card });
         anyPlay = true;
@@ -2109,19 +2261,10 @@ function simulatePlayout(state, determinization, rootCard, rng) {
     });
 
     for (const play of plays) {
-      const placement = findRowForCard(rows, play.card);
+      const placement = previewPlacement(rows, play.card);
       let forcedRowIdx = null;
       if (placement?.forcedTake) {
-        const forced = placement.forcedOptions || [];
-        if (forced.length === 1) {
-          forcedRowIdx = forced[0]?.rowIdx ?? null;
-        } else if (forced.length > 1) {
-          let pick = Math.floor(rng() * forced.length);
-          if (!Number.isFinite(pick) || pick < 0) pick = 0;
-          if (pick >= forced.length) pick = forced.length - 1;
-          forcedRowIdx = forced[pick]?.rowIdx ?? null;
-        }
-        if (!Number.isFinite(forcedRowIdx)) forcedRowIdx = null;
+        forcedRowIdx = pickForcedRowIndex(placement, rows);
       }
 
       const res = applyPlacementAndScore(
