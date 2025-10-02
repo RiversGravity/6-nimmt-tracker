@@ -1,7 +1,7 @@
 # 6 Nimmt Tracker – AI Guide
 
 ## Script layout
-- All logic lives in `6-nimmt-script.js` as a Tampermonkey userscript executed on BoardGameArena (`@run-at document-idle`).
+- All logic lives in `6-nimmt-script.user.js` as a Tampermonkey userscript executed on BoardGameArena (`@run-at document-idle`).
 - The IIFE is organized into thematic blocks: build constants, card state bookkeeping, UI rendering, ISMCTS solver, BGA game-data scanning, log parsing, round detection, and bootstrap observers.
 - Treat the file as the single source of truth—there is no bundler or dependency manager. Keep any shared helpers near the top-level blocks they serve.
 
