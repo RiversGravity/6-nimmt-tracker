@@ -2,14 +2,25 @@
 
 Tampermonkey userscript that enhances BoardGameArena's **6 Nimmt!** tables with live card tracking, round detection, and an ISMCTS-based recommendation panel.
 
-## Installation
+## Quick start (first-time setup)
 
-1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
-2. Open the raw userscript URL (Tampermonkey will prompt to install or update automatically):
-   - [6-nimmt-script.user.js](https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js)
-3. Accept the installation prompt. The script will run automatically on BoardGameArena once installed.
+1. **Install Tampermonkey.** Grab the extension for your browser from [tampermonkey.net](https://www.tampermonkey.net/).
+2. **Install the tracker.** Click the userscript link below; Tampermonkey will pop up an install dialog:
+   - [Install 6 Nimmt Tracker](https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js)
+3. **Confirm installation.** In the Tampermonkey tab that opens, press **Install**. The script is now active for any BoardGameArena page.
+4. **Join a 6 Nimmt table.** Open or refresh a game on BoardGameArena; the tracker panel appears automatically in the top-right corner once the table loads.
 
-Tampermonkey checks [`6-nimmt-script.meta.js`](https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.meta.js) for updates. Pushing to the `main` branch with a bumped `@version` field will trigger clients to pull the latest build on their next update cycle.
+### After installation
+
+- The script auto-updates: Tampermonkey periodically re-downloads [`6-nimmt-script.user.js`](https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js). Whenever we publish a new build (and bump `@version`), it replaces your local copy automatically.
+- You can force an update at any time from the Tampermonkey icon → *Check for userscript updates*.
+- To temporarily disable the tracker, toggle it off from the Tampermonkey dashboard without uninstalling.
+
+### Common troubleshooting
+
+- **No install prompt?** Make sure you visited the `.user.js` link above. If the tab shows the raw code instead, Tampermonkey might be disabled—re-enable the extension and retry.
+- **Tracker not appearing in-game?** Verify the script is enabled in the Tampermonkey dashboard and refresh the BoardGameArena table once.
+- **Stuck on an older build?** Use *Check for userscript updates* or uninstall/reinstall the script via the link above.
 
 ## Local development
 
