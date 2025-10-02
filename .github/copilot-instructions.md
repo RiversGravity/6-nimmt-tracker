@@ -1,7 +1,7 @@
 # 6 Nimmt Tracker – AI Guide
 
-## Single userscript layout
-- `6-nimmt-script.user.js` is the only source; the top-level IIFE is organized into blocks (constants/build stamp, state stores, data ingestion, UI, solver, observers). Keep helpers beside the block they support.
+## Single tracker layout
+- `6-nimmt-tracker.user.js` is the only source; the top-level IIFE is organized into blocks (constants/build stamp, state stores, data ingestion, UI, solver, observers). Keep helpers beside the block they support.
 - `findGameDataObject()` is the canonical entry for BoardGameArena snapshots; feed new flows through `buildCanonicalState()` instead of querying `g_game`/`gameui` directly.
 - `refreshStateAndMetrics()` is the shared heartbeat: bootstrap, observers, and manual hooks all call it to rebuild state, recompute metrics, and redraw the UI.
 
@@ -26,6 +26,6 @@
 - Round resets trigger `resetRoundRevealCounts()` and `clearRoundStorage()`. Mirror any new heuristics across live bootstrap and replay recovery paths.
 
 ## Development workflow
-- Bump both the userscript metadata `@version` and the `BUILD_STAMP` constant for user-visible changes so Tampermonkey clients update.
+- Bump both the tracker metadata `@version` and the `BUILD_STAMP` constant for user-visible changes so Tampermonkey clients update.
 - Local testing: import the `.user.js` into Tampermonkey (Utilities → Import from file), join a 6 Nimmt table, and watch the console—there is no automated test harness.
 - Handy console hooks: `refreshStateAndMetrics()` for a full resync, `hardResetForNewRound()` for clean bootstraps, and `renderUndercutList()` / `updateCardsUI()` to validate UI tweaks on demand.

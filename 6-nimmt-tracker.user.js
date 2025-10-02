@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.1.3
+// @version      1.2.0
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
 // @supportURL   https://github.com/RiversGravity/6-nimmt-tracker/issues
-// @downloadURL  https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js
-// @updateURL    https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js
+// @downloadURL  https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-tracker.user.js
+// @updateURL    https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-tracker.user.js
 // @match        *://boardgamearena.com/*
 // @match        *://*.boardgamearena.com/*
 // @grant        none
@@ -18,7 +18,7 @@
   'use strict';
 
   // ---------- Build / constants ----------
-  const BUILD_STAMP = '2025-10-02T19:05:00Z';
+  const BUILD_STAMP = '2025-10-02T19:25:00Z';
   const CARD_COUNT = 104;
   const TABLE_ID = (location.href.match(/table=(\d+)/)?.[1] || 'global');
 
@@ -2314,7 +2314,7 @@ self.onmessage = (event) => {
       this.enabled = opts.enabled !== false;
       this.timeSliceMs = clamp(Math.floor(opts.timeSliceMs || 140), 40, 1000);
       this.onUpdate = (typeof opts.onUpdate === 'function') ? opts.onUpdate : () => {};
-      this.workerScriptUrl = createSolverWorkerUrl();
+  this.workerSourceUrl = createSolverWorkerUrl();
       this.workers = [];
       this.currentState = null;
       this.currentSignature = null;
@@ -2451,7 +2451,7 @@ self.onmessage = (event) => {
 
     spawnWorker() {
       try {
-        const worker = new Worker(this.workerScriptUrl);
+  const worker = new Worker(this.workerSourceUrl);
         const info = { worker, id: this.nextWorkerId++, busy: false, requestId: null };
         worker.onmessage = (ev) => this.handleWorkerMessage(info, ev.data);
         worker.onerror = (err) => this.handleWorkerError(info, err);
