@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         6-Nimmt-Script (Hello World)
+// @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
 // @version      1.1.2
 // @description  Minimal build
