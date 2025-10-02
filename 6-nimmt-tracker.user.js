@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -2012,13 +2012,12 @@
     const seatIndex = new Map();
     for (let i = 0; i < players.length; i++) seatIndex.set(players[i], i);
 
-    const bullsByPlayer = Object.create(null);
-    for (const id of players) bullsByPlayer[id] = 0;
+  const bullsByPlayer = Object.create(null);
+  for (const id of players) bullsByPlayer[id] = 0;
 
-    let forcedCardPending = true;
-    let rootResolved = false;
-    let immediatePenalty = 0;
-    let futurePenalty = 0;
+  let forcedCardPending = true;
+  let rootResolved = false;
+  let immediatePenalty = null;
     let turns = 0;
     const maxTurns = 200;
 
@@ -2066,7 +2065,6 @@
         if (placement?.forcedTake) {
           forcedRowIdx = pickForcedRowIndex(placement, rows);
         }
-        const beforeMyBulls = bullsByPlayer[myId] || 0;
         const res = applyPlacementAndScore(
           rows,
           play.card,
@@ -2075,30 +2073,21 @@
           { forcedRowIdx, placement }
         );
         rows = res.rows;
-        const afterMyBulls = bullsByPlayer[myId] || 0;
-        const gained = afterMyBulls - beforeMyBulls;
-        if (gained > 0) {
-          if (!rootResolved && play.playerId === myId) {
-            immediatePenalty += gained;
-          } else {
-            futurePenalty += gained;
-          }
-        }
         if (play.playerId === myId && !rootResolved) {
           rootResolved = true;
         }
       }
+
+      if (rootResolved && immediatePenalty == null) {
+        immediatePenalty = Math.max(0, bullsByPlayer[myId] || 0);
+      }
     }
 
-    const myPenalty = bullsByPlayer[myId] || 0;
-    const totalPenalty = immediatePenalty + futurePenalty;
-    if (Math.abs(totalPenalty - myPenalty) > 1e-6) {
-      // Fallback if bookkeeping drifts for any reason
-      const futureFromTotal = Math.max(myPenalty - immediatePenalty, 0);
-      futurePenalty = futureFromTotal;
-    }
+    const totalPenalty = Math.max(0, bullsByPlayer[myId] || 0);
+    if (immediatePenalty == null) immediatePenalty = totalPenalty;
+    const futurePenalty = Math.max(totalPenalty - immediatePenalty, 0);
     return {
-      reward: -(immediatePenalty + futurePenalty),
+      reward: -totalPenalty,
       immediatePenalty,
       futurePenalty
     };
@@ -2801,8 +2790,7 @@ function simulatePlayout(state, determinization, rootCard, rng) {
 
   let forcedCardPending = true;
   let rootResolved = false;
-  let immediatePenalty = 0;
-  let futurePenalty = 0;
+  let immediatePenalty = null;
   let turns = 0;
   const maxTurns = 200;
 
@@ -2850,7 +2838,6 @@ function simulatePlayout(state, determinization, rootCard, rng) {
       if (placement?.forcedTake) {
         forcedRowIdx = pickForcedRowIndex(placement, rows);
       }
-      const beforeMyBulls = bullsByPlayer[myId] || 0;
       const res = applyPlacementAndScore(
         rows,
         play.card,
@@ -2859,29 +2846,21 @@ function simulatePlayout(state, determinization, rootCard, rng) {
         { forcedRowIdx, placement }
       );
       rows = res.rows;
-      const afterMyBulls = bullsByPlayer[myId] || 0;
-      const gained = afterMyBulls - beforeMyBulls;
-      if (gained > 0) {
-        if (!rootResolved && play.playerId === myId) {
-          immediatePenalty += gained;
-        } else {
-          futurePenalty += gained;
-        }
-      }
       if (play.playerId === myId && !rootResolved) {
         rootResolved = true;
       }
     }
+
+    if (rootResolved && immediatePenalty == null) {
+      immediatePenalty = Math.max(0, bullsByPlayer[myId] || 0);
+    }
   }
 
-  const myPenalty = bullsByPlayer[myId] || 0;
-  const totalPenalty = immediatePenalty + futurePenalty;
-  if (Math.abs(totalPenalty - myPenalty) > 1e-6) {
-    const futureFromTotal = Math.max(myPenalty - immediatePenalty, 0);
-    futurePenalty = futureFromTotal;
-  }
+  const totalPenalty = Math.max(0, bullsByPlayer[myId] || 0);
+  if (immediatePenalty == null) immediatePenalty = totalPenalty;
+  const futurePenalty = Math.max(totalPenalty - immediatePenalty, 0);
   return {
-    reward: -(immediatePenalty + futurePenalty),
+    reward: -totalPenalty,
     immediatePenalty,
     futurePenalty
   };
