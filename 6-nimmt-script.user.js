@@ -18,7 +18,7 @@
   'use strict';
 
   // ---------- Build / constants ----------
-  const BUILD_STAMP = '2025-10-02T18:10:00Z';
+  const BUILD_STAMP = '2025-10-02T18:10:00Zzzz';
   const CARD_COUNT = 104;
   const TABLE_ID = (location.href.match(/table=(\d+)/)?.[1] || 'global');
 
