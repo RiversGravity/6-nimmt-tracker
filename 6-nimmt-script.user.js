@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
-// @version      1.0.7
+// @version      1.0.8
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -142,9 +142,17 @@
     return val;
   }
   function findGameDataObject() {
-    if (typeof g_game !== 'undefined' && g_game.gamedatas) return g_game.gamedatas;
-    if (typeof gameui !== 'undefined' && gameui.gamedatas) return gameui.gamedatas;
-    if (typeof gamedatas !== 'undefined') return gamedatas;
+    const scope = (typeof globalThis !== 'undefined')
+      ? globalThis
+      : (typeof window !== 'undefined') ? window : {};
+
+    const gGame = scope.g_game;
+    if (gGame && gGame.gamedatas) return gGame.gamedatas;
+
+    const gameUi = scope.gameui;
+    if (gameUi && gameUi.gamedatas) return gameUi.gamedatas;
+
+    if (scope.gamedatas) return scope.gamedatas;
     return null;
   }
 
