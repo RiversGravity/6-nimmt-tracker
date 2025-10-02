@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.3
+// @version      1.2.4
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1137,6 +1137,16 @@
         knowledgeByPlayer[id] = { must: [], forbid: [] };
       }
 
+      const estimateRemaining = (id) => {
+        const info = opponentHandCounts[id];
+        if (!info) return null;
+        if (Number.isFinite(info.remaining)) return info.remaining;
+        if (Number.isFinite(info.initialEstimate) && Number.isFinite(info.reveals)) {
+          return Math.max(info.initialEstimate - info.reveals, 0);
+        }
+        return null;
+      };
+
       for (const entry of deck) {
         if (!entry) continue;
         if (entry.state !== 'unknown' || entry.played || entry.inMyHand) continue;
@@ -1195,7 +1205,8 @@
         }
         if (positiveIds.length === 1) {
           const onlyId = positiveIds[0];
-          if (knowledgeByPlayer[onlyId]) {
+          const capacity = estimateRemaining(onlyId);
+          if (knowledgeByPlayer[onlyId] && (!(Number.isFinite(capacity)) || capacity > 0)) {
             knowledgeByPlayer[onlyId].must.push(entry.card);
           }
         }
@@ -1681,15 +1692,20 @@
     for (const w of wants) {
       const normalizedNeed = Number.isFinite(w.need) ? Math.max(0, Math.floor(w.need)) : 0;
       const knowledge = knowledgeSets[w.id];
-      const mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
-      if (mustList.length > normalizedNeed) return null;
+      let mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
+      if (normalizedNeed <= 0 || !mustList.length) {
+        mustList = [];
+      } else if (mustList.length > normalizedNeed) {
+        mustList = mustList.slice(0, normalizedNeed);
+      }
       for (const card of mustList) {
         globalMustSet.add(card);
         validUnknown.delete(card);
       }
-      w.must = mustList.sort((a, b) => a - b);
-      w.need = Math.max(0, normalizedNeed - mustList.length);
-      hands[w.id] = w.must.slice();
+      const appliedMust = mustList.sort((a, b) => a - b);
+      w.must = appliedMust;
+      w.need = Math.max(0, normalizedNeed - appliedMust.length);
+      hands[w.id] = appliedMust.slice();
     }
 
     const remainingCards = unknownCards.filter(card => !globalMustSet.has(card));
@@ -2370,15 +2386,20 @@ function sampleDeterminization(state, rng) {
   for (const w of wants) {
     const normalizedNeed = Number.isFinite(w.need) ? Math.max(0, Math.floor(w.need)) : 0;
     const knowledge = knowledgeSets[w.id];
-    const mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
-    if (mustList.length > normalizedNeed) return null;
+    let mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
+    if (normalizedNeed <= 0 || !mustList.length) {
+      mustList = [];
+    } else if (mustList.length > normalizedNeed) {
+      mustList = mustList.slice(0, normalizedNeed);
+    }
     for (const card of mustList) {
       globalMustSet.add(card);
       validUnknown.delete(card);
     }
-    w.must = mustList.sort((a, b) => a - b);
-    w.need = Math.max(0, normalizedNeed - mustList.length);
-    hands[w.id] = w.must.slice();
+    const appliedMust = mustList.sort((a, b) => a - b);
+    w.must = appliedMust;
+    w.need = Math.max(0, normalizedNeed - appliedMust.length);
+    hands[w.id] = appliedMust.slice();
   }
 
   const remainingCards = unknownCards.filter(card => !globalMustSet.has(card));
