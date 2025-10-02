@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.5
+// @version      1.2.6
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -624,7 +624,7 @@
       <p><strong>Minimal tracker</strong> (build ${BUILD_STAMP})</p>
       <ul style="margin:0 0 6px 16px;">
         <li><b>Grid:</b> <span style="color:#2e7d32;">green</span>=in hand, <span style="color:#fff;background:#c62828;padding:0 4px;border-radius:3px;">red</span>=seen/played this round, grey=unknown.</li>
-        <li><b>Card metrics</b>: ISMCTS expected bull-head penalties (lower is better) plus undercut counts for context.</li>
+  <li><b>Card metrics</b>: ISMCTS expected bull-head penalties split into immediate vs. future impact, plus undercut counts for context.</li>
         <li><b>Auto-refresh:</b> Page reloads automatically when a new round starts.</li>
         <li><b>UI position/size:</b> Saved permanently across all sessions.</li>
         <li><b>Solver controls:</b> Pause/resume the ISMCTS search or cap the number of background workers.</li>
@@ -1965,6 +1965,9 @@
     for (const id of players) bullsByPlayer[id] = 0;
 
     let forcedCardPending = true;
+    let rootResolved = false;
+    let immediatePenalty = 0;
+    let futurePenalty = 0;
     let turns = 0;
     const maxTurns = 200;
 
@@ -2012,7 +2015,7 @@
         if (placement?.forcedTake) {
           forcedRowIdx = pickForcedRowIndex(placement, rows);
         }
-
+        const beforeMyBulls = bullsByPlayer[myId] || 0;
         const res = applyPlacementAndScore(
           rows,
           play.card,
@@ -2021,11 +2024,33 @@
           { forcedRowIdx, placement }
         );
         rows = res.rows;
+        const afterMyBulls = bullsByPlayer[myId] || 0;
+        const gained = afterMyBulls - beforeMyBulls;
+        if (gained > 0) {
+          if (!rootResolved && play.playerId === myId) {
+            immediatePenalty += gained;
+          } else {
+            futurePenalty += gained;
+          }
+        }
+        if (play.playerId === myId && !rootResolved) {
+          rootResolved = true;
+        }
       }
     }
 
     const myPenalty = bullsByPlayer[myId] || 0;
-    return -myPenalty;
+    const totalPenalty = immediatePenalty + futurePenalty;
+    if (Math.abs(totalPenalty - myPenalty) > 1e-6) {
+      // Fallback if bookkeeping drifts for any reason
+      const futureFromTotal = Math.max(myPenalty - immediatePenalty, 0);
+      futurePenalty = futureFromTotal;
+    }
+    return {
+      reward: -(immediatePenalty + futurePenalty),
+      immediatePenalty,
+      futurePenalty
+    };
   }
 
   const PUCT_EXPLORATION = 1.15;
@@ -2036,6 +2061,8 @@
       prior,
       visitCount: 0,
       totalReward: 0,
+      totalImmediate: 0,
+      totalFuture: 0,
       children: new Map()
     };
   }
@@ -2082,22 +2109,41 @@
       if (!determinization) continue;
       const child = selectChild(root, rng);
       if (!child) break;
-      const reward = simulatePlayout(state, determinization, child.card, rng);
-      if (!Number.isFinite(reward)) continue;
+      const outcome = simulatePlayout(state, determinization, child.card, rng);
+      if (!outcome || !Number.isFinite(outcome.reward)) continue;
+      const { reward, immediatePenalty = 0, futurePenalty = 0 } = outcome;
       child.visitCount += 1;
-      child.totalReward += reward;
-      root.visitCount += 1;
-      root.totalReward += reward;
+  child.totalReward = (child.totalReward || 0) + reward;
+  child.totalImmediate = (child.totalImmediate || 0) + immediatePenalty;
+  child.totalFuture = (child.totalFuture || 0) + futurePenalty;
+  root.visitCount += 1;
+  root.totalReward = (root.totalReward || 0) + reward;
+  root.totalImmediate = (root.totalImmediate || 0) + immediatePenalty;
+  root.totalFuture = (root.totalFuture || 0) + futurePenalty;
       completed++;
     }
 
     const results = [];
     for (const [card, node] of root.children.entries()) {
       if (node.visitCount > 0 && Number.isFinite(node.totalReward)) {
-        const expected = -node.totalReward / node.visitCount;
-        results.push({ card, expectedBulls: expected, visitCount: node.visitCount });
+        const immediateAvg = node.totalImmediate / node.visitCount;
+        const futureAvg = node.totalFuture / node.visitCount;
+        const expected = immediateAvg + futureAvg;
+        results.push({
+          card,
+          expectedBulls: expected,
+          expectedImmediate: immediateAvg,
+          expectedFuture: futureAvg,
+          visitCount: node.visitCount
+        });
       } else {
-        results.push({ card, expectedBulls: null, visitCount: node.visitCount || 0 });
+        results.push({
+          card,
+          expectedBulls: null,
+          expectedImmediate: null,
+          expectedFuture: null,
+          visitCount: node.visitCount || 0
+        });
       }
     }
 
@@ -2654,6 +2700,9 @@ function simulatePlayout(state, determinization, rootCard, rng) {
   for (const id of players) bullsByPlayer[id] = 0;
 
   let forcedCardPending = true;
+  let rootResolved = false;
+  let immediatePenalty = 0;
+  let futurePenalty = 0;
   let turns = 0;
   const maxTurns = 200;
 
@@ -2701,7 +2750,7 @@ function simulatePlayout(state, determinization, rootCard, rng) {
       if (placement?.forcedTake) {
         forcedRowIdx = pickForcedRowIndex(placement, rows);
       }
-
+      const beforeMyBulls = bullsByPlayer[myId] || 0;
       const res = applyPlacementAndScore(
         rows,
         play.card,
@@ -2710,11 +2759,32 @@ function simulatePlayout(state, determinization, rootCard, rng) {
         { forcedRowIdx, placement }
       );
       rows = res.rows;
+      const afterMyBulls = bullsByPlayer[myId] || 0;
+      const gained = afterMyBulls - beforeMyBulls;
+      if (gained > 0) {
+        if (!rootResolved && play.playerId === myId) {
+          immediatePenalty += gained;
+        } else {
+          futurePenalty += gained;
+        }
+      }
+      if (play.playerId === myId && !rootResolved) {
+        rootResolved = true;
+      }
     }
   }
 
   const myPenalty = bullsByPlayer[myId] || 0;
-  return -myPenalty;
+  const totalPenalty = immediatePenalty + futurePenalty;
+  if (Math.abs(totalPenalty - myPenalty) > 1e-6) {
+    const futureFromTotal = Math.max(myPenalty - immediatePenalty, 0);
+    futurePenalty = futureFromTotal;
+  }
+  return {
+    reward: -(immediatePenalty + futurePenalty),
+    immediatePenalty,
+    futurePenalty
+  };
 }
 const PUCT_EXPLORATION = 1.15;
 function createNode(card, prior = 0) {
@@ -2723,6 +2793,8 @@ function createNode(card, prior = 0) {
     prior,
     visitCount: 0,
     totalReward: 0,
+    totalImmediate: 0,
+    totalFuture: 0,
     children: new Map()
   };
 }
@@ -2812,7 +2884,13 @@ function flushProgress(task) {
   const payload = [];
   if (task.deltaStats.size) {
     for (const [card, info] of task.deltaStats.entries()) {
-      payload.push({ card, visits: info.visits, totalReward: info.totalReward });
+      payload.push({
+        card,
+        visits: info.visits,
+        totalReward: info.totalReward,
+        totalImmediate: info.totalImmediate,
+        totalFuture: info.totalFuture
+      });
     }
     task.deltaStats.clear();
   }
@@ -2821,14 +2899,16 @@ function flushProgress(task) {
   if (!payload.length && iterationDelta === 0) return;
   postMessage({ type: 'progress', requestId: task.requestId, deltas: payload, iterationDelta });
 }
-function recordDelta(task, card, reward) {
+function recordDelta(task, card, reward, immediatePenalty, futurePenalty) {
   let entry = task.deltaStats.get(card);
   if (!entry) {
-    entry = { visits: 0, totalReward: 0 };
+    entry = { visits: 0, totalReward: 0, totalImmediate: 0, totalFuture: 0 };
     task.deltaStats.set(card, entry);
   }
   entry.visits += 1;
-  entry.totalReward += reward;
+  entry.totalReward = (entry.totalReward || 0) + reward;
+  entry.totalImmediate = (entry.totalImmediate || 0) + immediatePenalty;
+  entry.totalFuture = (entry.totalFuture || 0) + futurePenalty;
   task.deltaIterations += 1;
   if (task.deltaIterations >= 48) {
     flushProgress(task);
@@ -2846,13 +2926,18 @@ function runIterations(task, timeMs) {
     if (!determinization) continue;
     const child = selectChild(task.root, rng);
     if (!child) break;
-    const reward = simulatePlayout(state, determinization, child.card, rng);
-    if (!Number.isFinite(reward)) continue;
+    const outcome = simulatePlayout(state, determinization, child.card, rng);
+    if (!outcome || !Number.isFinite(outcome.reward)) continue;
+    const { reward, immediatePenalty = 0, futurePenalty = 0 } = outcome;
     child.visitCount += 1;
-    child.totalReward += reward;
+    child.totalReward = (child.totalReward || 0) + reward;
+    child.totalImmediate = (child.totalImmediate || 0) + immediatePenalty;
+    child.totalFuture = (child.totalFuture || 0) + futurePenalty;
     task.root.visitCount += 1;
-    task.root.totalReward += reward;
-    recordDelta(task, child.card, reward);
+    task.root.totalReward = (task.root.totalReward || 0) + reward;
+    task.root.totalImmediate = (task.root.totalImmediate || 0) + immediatePenalty;
+    task.root.totalFuture = (task.root.totalFuture || 0) + futurePenalty;
+    recordDelta(task, child.card, reward, immediatePenalty, futurePenalty);
   }
   flushProgress(task);
   const reason = stopRequested ? 'stopped' : 'timeout';
@@ -3149,10 +3234,14 @@ self.onmessage = (event) => {
         if (!Number.isFinite(card)) continue;
         const visits = Number.isFinite(entry.visits) ? entry.visits : 0;
         const totalReward = Number.isFinite(entry.totalReward) ? entry.totalReward : 0;
-        if (!visits && !totalReward) continue;
-        const existing = this.aggregatedStats.get(card) || { visits: 0, totalReward: 0 };
-        existing.visits += visits;
-        existing.totalReward += totalReward;
+        const totalImmediate = Number.isFinite(entry.totalImmediate) ? entry.totalImmediate : 0;
+        const totalFuture = Number.isFinite(entry.totalFuture) ? entry.totalFuture : 0;
+        if (!visits && !totalReward && !totalImmediate && !totalFuture) continue;
+        const existing = this.aggregatedStats.get(card) || { visits: 0, totalReward: 0, totalImmediate: 0, totalFuture: 0 };
+        existing.visits = (existing.visits || 0) + visits;
+        existing.totalReward = (existing.totalReward || 0) + totalReward;
+        existing.totalImmediate = (existing.totalImmediate || 0) + totalImmediate;
+        existing.totalFuture = (existing.totalFuture || 0) + totalFuture;
         this.aggregatedStats.set(card, existing);
       }
       this.updateSignatureCache();
@@ -3165,9 +3254,14 @@ self.onmessage = (event) => {
         if (!Number.isFinite(key)) continue;
         const existing = this.aggregatedStats.get(key);
         if (existing) {
-          stats.set(key, { visits: existing.visits, totalReward: existing.totalReward });
+          stats.set(key, {
+            visits: existing.visits,
+            totalReward: existing.totalReward,
+            totalImmediate: existing.totalImmediate,
+            totalFuture: existing.totalFuture
+          });
         } else {
-          stats.set(key, { visits: 0, totalReward: 0 });
+          stats.set(key, { visits: 0, totalReward: 0, totalImmediate: 0, totalFuture: 0 });
         }
       }
       return {
@@ -3181,7 +3275,12 @@ self.onmessage = (event) => {
       if (!signature) return;
       const snapshot = [];
       for (const [card, info] of this.aggregatedStats.entries()) {
-        snapshot.push([card, { visits: info.visits, totalReward: info.totalReward }]);
+        snapshot.push([card, {
+          visits: info.visits,
+          totalReward: info.totalReward,
+          totalImmediate: info.totalImmediate,
+          totalFuture: info.totalFuture
+        }]);
       }
       this.signatureCache.set(signature, {
         stats: snapshot,
@@ -3208,7 +3307,9 @@ self.onmessage = (event) => {
         if (!info) continue;
         next.set(card, {
           visits: Number.isFinite(info.visits) ? info.visits : 0,
-          totalReward: Number.isFinite(info.totalReward) ? info.totalReward : 0
+          totalReward: Number.isFinite(info.totalReward) ? info.totalReward : 0,
+          totalImmediate: Number.isFinite(info.totalImmediate) ? info.totalImmediate : 0,
+          totalFuture: Number.isFinite(info.totalFuture) ? info.totalFuture : 0
         });
       }
       this.aggregatedStats = next;
@@ -3624,7 +3725,14 @@ self.onmessage = (event) => {
         const end = rowEnds[idx];
         under = computeUndercutCountForCard(card, idx, end, rowEnds);
       }
-      cardMetrics.set(card, { card, under, expected: null, visits: 0 });
+      cardMetrics.set(card, {
+        card,
+        under,
+        visits: 0,
+        expectedNow: null,
+        expectedLater: null,
+        expectedTotal: null
+      });
     }
 
     const signature = computeSolverSignature(canonical);
@@ -3638,15 +3746,39 @@ self.onmessage = (event) => {
 
     let bestEv = Infinity;
     for (const card of hand) {
-      const entry = cardMetrics.get(card) || { card, under: 0, expected: null, visits: 0 };
+      const entry = cardMetrics.get(card) || {
+        card,
+        under: 0,
+        visits: 0,
+        expectedNow: null,
+        expectedLater: null,
+        expectedTotal: null
+      };
       const solverInfo = solverSnapshot.stats.get(card);
-      if (solverInfo && Number.isFinite(solverInfo.visits) && solverInfo.visits > 0 && Number.isFinite(solverInfo.totalReward)) {
-        entry.visits = solverInfo.visits;
-        entry.expected = -(solverInfo.totalReward / solverInfo.visits);
-        if (entry.expected < bestEv) bestEv = entry.expected;
+      if (solverInfo && Number.isFinite(solverInfo.visits) && solverInfo.visits > 0) {
+        const visits = solverInfo.visits;
+        const totalReward = Number.isFinite(solverInfo.totalReward) ? solverInfo.totalReward : null;
+        const totalImmediate = Number.isFinite(solverInfo.totalImmediate) ? solverInfo.totalImmediate : 0;
+        const totalFuture = Number.isFinite(solverInfo.totalFuture) ? solverInfo.totalFuture : 0;
+        const expectedNow = visits ? (totalImmediate / visits) : null;
+        const expectedLater = visits ? (totalFuture / visits) : null;
+        let expectedTotal = null;
+        if (totalReward != null) {
+          expectedTotal = -(totalReward / visits);
+        } else if (Number.isFinite(expectedNow) || Number.isFinite(expectedLater)) {
+          expectedTotal = (Number.isFinite(expectedNow) ? expectedNow : 0) + (Number.isFinite(expectedLater) ? expectedLater : 0);
+        }
+        entry.visits = visits;
+        entry.expectedNow = Number.isFinite(expectedNow) ? expectedNow : null;
+        entry.expectedLater = Number.isFinite(expectedLater) ? expectedLater : null;
+        if (Number.isFinite(expectedTotal)) {
+          entry.expectedTotal = expectedTotal;
+          if (expectedTotal < bestEv) bestEv = expectedTotal;
+        } else {
+          entry.expectedTotal = null;
+        }
       } else if (solverInfo) {
         entry.visits = solverInfo.visits || 0;
-        entry.expected = null;
       }
       cardMetrics.set(card, entry);
     }
@@ -3655,7 +3787,7 @@ self.onmessage = (event) => {
     if (bestEv !== Infinity) {
       const tolerance = 0.05;
       for (const entry of cardMetrics.values()) {
-        if (Number.isFinite(entry.expected) && Math.abs(entry.expected - bestEv) <= tolerance) {
+        if (Number.isFinite(entry.expectedTotal) && Math.abs(entry.expectedTotal - bestEv) <= tolerance) {
           highlight.add(entry.card);
         }
       }
@@ -3671,10 +3803,10 @@ self.onmessage = (event) => {
     recommendedCards = highlight;
 
     const sorted = Array.from(cardMetrics.values()).sort((a, b) => {
-      const aHasEv = Number.isFinite(a.expected);
-      const bHasEv = Number.isFinite(b.expected);
+      const aHasEv = Number.isFinite(a.expectedTotal);
+      const bHasEv = Number.isFinite(b.expectedTotal);
       if (aHasEv && bHasEv) {
-        if (a.expected !== b.expected) return a.expected - b.expected;
+        if (a.expectedTotal !== b.expectedTotal) return a.expectedTotal - b.expectedTotal;
         if (a.visits !== b.visits) return b.visits - a.visits;
       } else if (aHasEv) {
         return -1;
@@ -3686,12 +3818,14 @@ self.onmessage = (event) => {
       return a.card - b.card;
     });
 
-    let html = `<table><thead><tr><th>Card</th><th>EV&nbsp;Bulls</th><th>Samples</th><th>Undercut&nbsp;#</th></tr></thead><tbody>`;
+    let html = `<table><thead><tr><th>Card</th><th>EV&nbsp;Now</th><th>EV&nbsp;Later</th><th>EV&nbsp;Total</th><th>Samples</th><th>Undercut&nbsp;#</th></tr></thead><tbody>`;
     for (const row of sorted) {
       const cls = highlight.has(row.card) ? ' class="best-card"' : '';
-      const evStr = Number.isFinite(row.expected) ? row.expected.toFixed(2) : '—';
-      const samplesStr = Number.isFinite(row.expected) ? row.visits : '—';
-      html += `<tr${cls}><td>${row.card}</td><td>${evStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
+  const evNowStr = Number.isFinite(row.expectedNow) ? row.expectedNow.toFixed(2) : '—';
+  const evLaterStr = Number.isFinite(row.expectedLater) ? row.expectedLater.toFixed(2) : '—';
+  const evTotalStr = Number.isFinite(row.expectedTotal) ? row.expectedTotal.toFixed(2) : '—';
+  const samplesStr = row.visits > 0 ? row.visits : '—';
+      html += `<tr${cls}><td>${row.card}</td><td>${evNowStr}</td><td>${evLaterStr}</td><td>${evTotalStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
     }
     html += '</tbody></table>';
 
