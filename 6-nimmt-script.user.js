@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
-// @version      1.0.5
+// @version      1.0.6
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -18,7 +18,7 @@
   'use strict';
 
   // ---------- Build / constants ----------
-  const BUILD_STAMP = '2025-10-02T18:10:00Zzzz';
+  const BUILD_STAMP = '2025-10-02T18:10:00Z';
   const CARD_COUNT = 104;
   const TABLE_ID = (location.href.match(/table=(\d+)/)?.[1] || 'global');
 
