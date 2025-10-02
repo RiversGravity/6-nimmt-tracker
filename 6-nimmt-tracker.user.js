@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.7
+// @version      1.2.8
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -3820,12 +3820,20 @@ self.onmessage = (event) => {
       return a.card - b.card;
     });
 
+    const formatEv = (value) => {
+      if (!Number.isFinite(value)) return '—';
+      const abs = Math.abs(value);
+      if (abs > 0 && abs < 0.005) return '<0.01';
+      if (abs < 10) return value.toFixed(2);
+      return value.toFixed(1);
+    };
+
     let html = `<table><thead><tr><th>Card</th><th>EV&nbsp;Now</th><th>EV&nbsp;Later</th><th>EV&nbsp;Total</th><th>Samples</th><th>Undercut&nbsp;#</th></tr></thead><tbody>`;
     for (const row of sorted) {
       const cls = highlight.has(row.card) ? ' class="best-card"' : '';
-  const evNowStr = Number.isFinite(row.expectedNow) ? row.expectedNow.toFixed(2) : '—';
-  const evLaterStr = Number.isFinite(row.expectedLater) ? row.expectedLater.toFixed(2) : '—';
-  const evTotalStr = Number.isFinite(row.expectedTotal) ? row.expectedTotal.toFixed(2) : '—';
+  const evNowStr = formatEv(row.expectedNow);
+  const evLaterStr = formatEv(row.expectedLater);
+  const evTotalStr = formatEv(row.expectedTotal);
   const samplesStr = row.visits > 0 ? row.visits : '—';
       html += `<tr${cls}><td>${row.card}</td><td>${evNowStr}</td><td>${evLaterStr}</td><td>${evTotalStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
     }
