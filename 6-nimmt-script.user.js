@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -2919,7 +2919,7 @@ self.onmessage = (event) => {
   function computeUndercutCountForCard(c, rowIdx, endVal, rowEnds) {
     let count = 0;
     for (let u = endVal + 1; u <= c - 1; u++) {
-      if ((cardState[u] || 'unknown') !== 'unknown') continue;  // only unseen
+    if ((cardState[u] || 'unknown') !== 'unknown') continue; // only unseen
       if (chosenRowIdx(u, rowEnds) === rowIdx) count++;
     }
     return count;
