@@ -1,0 +1,28 @@
+# Logs
+npm-debug.log*
+yarn-debug.log*
+*.log
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.zip
+
+# Local environment
+.env
+.env.*
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+*.code-workspace
+
+# Temporary archives
+*__archive/
+*__archive

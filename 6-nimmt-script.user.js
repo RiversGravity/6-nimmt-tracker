@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         6-Nimmt-Script
+// @name         6-Nimmt-Script (Hello World)
 // @namespace    http://tampermonkey.net/
-// @version      1.1.1
+// @version      1.1.2
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
