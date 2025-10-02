@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6-Nimmt-Script
 // @namespace    http://tampermonkey.net/
-// @version      1.0.6
+// @version      1.0.7
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -3059,12 +3059,12 @@ self.onmessage = (event) => {
       let touched = false;
       for (const mut of muts) {
         if (mut.type !== 'childList' || !mut.addedNodes?.length) continue;
-        mut.addedNodes.forEach(node => {
-          if (node.nodeType !== Node.ELEMENT_NODE) return;
+        for (const node of mut.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
           const text = node.innerText?.trim();
-          if (!text) return;
+          if (!text) continue;
           if (applyLogLine(text, false)) touched = true;
-        });
+        }
       }
       if (touched) {
         savePlayedToSession();

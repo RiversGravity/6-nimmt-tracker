@@ -1,34 +1,37 @@
 # 6 Nimmt Tracker – AI Guide
 
-## Script layout
-- All logic lives in `6-nimmt-script.user.js` as a Tampermonkey userscript executed on BoardGameArena (`@run-at document-idle`).
-- The IIFE is organized into thematic blocks: build constants, card state bookkeeping, UI rendering, ISMCTS solver, BGA game-data scanning, log parsing, round detection, and bootstrap observers.
-- Treat the file as the single source of truth—there is no bundler or dependency manager. Keep any shared helpers near the top-level blocks they serve.
+## Single-file architecture
+- The tracker ships as a single Tampermonkey userscript (`6-nimmt-script.user.js`) that runs on BoardGameArena at `@run-at document-idle`.
+- The top-level IIFE is segmented into constants, state stores, UI rendering, solver plumbing, BGA data capture, log replay, round detection, and bootstrap observers—keep helpers near the block they support.
+- `findGameDataObject()` is the entry point for live/replay data; every flow derives from the canonical snapshot built in this file (no bundler or external modules).
 
-## Card & round state
-- Card state is tracked via `cardState`, `playedSet`, and `prevHand`. Use `setCardState` to promote states (`unknown → my_hand → played`) so monotonic rules hold.
-- Round-specific persistence lives in `sessionStorage` (`SS_PLAYED`, `SS_ROUND_SIG`, `SS_NEW_ROUND_FLAG`); UI chrome uses `localStorage` (`LS_UI_STATE`). Respect these keys when adding new persistence to avoid clobbering existing data.
-- `buildCanonicalState` produces the authoritative snapshot for solver + UI. Extend its payload instead of gathering ad-hoc DOM state.
+## State & persistence
+- Card knowledge flows through `cardState`, `playedSet`, `prevHand`, and `roundRevealCounts`; always promote states with `setCardState` (`unknown → my_hand → played`) to preserve monotonic guarantees.
+- Session-level storage (`SS_PLAYED`, `SS_ROUND_SIG`, `SS_NEW_ROUND_FLAG`) tracks per-table rounds; UI layout/settings persist via `LS_UI_STATE`. Use `savePlayedToSession()`/`loadPlayedFromSession()` instead of touching storage directly.
+- `buildCanonicalState()` is the shared truth for UI + solver; extend its payload rather than scraping the DOM ad hoc.
 
-## Game data ingestion
-- `findGameDataObject()` and `collectPlayerMetadataFromGD()` normalize BoardGameArena structures; always funnel new metadata through them so replay + live updates stay in sync.
-- Table rows are reconstructed via `captureRowsWithBgaMapFromGD()` and friends. When adjusting how rows are detected, update both the snapshot helpers and the replay logic in `applyLogToLiveRows`/`replayExistingLogForCurrentRound`.
-- Log parsing (`applyLogLine`) is the only place that mutates `liveRowsByBga` from textual events; mirror its regex style and remember to `noteCardRevealFromName` to keep reveal counts accurate.
+## Data ingestion & replay
+- Normalize BGA structs through `collectPlayerMetadataFromGD()` and `syncTableMeta()`; avoid interrogating `g_game`/`gameui` elsewhere to keep replay and live modes consistent.
+- Table state comes from `captureRowsWithBgaMapFromGD()` and `seedLiveRowsFromGD()`. If you tweak row detection, update the replay path in `applyLogToLiveRows()`/`replayExistingLogForCurrentRound()` too.
+- `applyLogLine()` is the single mutator for `liveRowsByBga` based on textual logs—mirror its regex patterns and remember `noteCardRevealFromName()` whenever a card identity becomes public.
 
-## UI & metrics
-- UI is created once in `createTrackerUI()` and refreshed through `updateCardsUI()` and `renderUndercutList()`. New UI pieces should be wired into `saveUIState`/`loadUIState` to persist layout + solver settings.
-- Metrics table expects `renderUndercutList()` to populate `recommendedCards`; any new scoring data should be appended to the same `cardMetrics` map so highlighting logic stays centralized.
+## UI & solver pipeline
+- UI mounts once via `createTrackerUI()`, then `updateCardsUI()` and `renderUndercutList()` refresh visuals. New panels must save/restore state through `saveUIState()`/`loadUIState()`.
+- Undercut/highlight logic hinges on `cardMetrics` and `recommendedCards`; feed any new scoring into that map instead of hand-building DOM.
+- ISMCTS orchestration lives in `SolverCoordinator` + `runIsmctsRecommendation()` on the main thread and `buildSolverWorkerSource()` for the inline worker. Keep duplicated helpers (`findRowForCard`, `resolvePlacement`, `createRng`, etc.) identical across both copies.
+- Worker pacing assumes deterministic seeds and periodic `flushProgress()`/`recordDelta()` calls; adjust iteration cadence without breaking those checkpoints.
 
-## Solver pipeline
-- ISMCTS orchestration is split between the main thread (`SolverCoordinator`, `runIsmctsRecommendation`) and an inline worker built by `buildSolverWorkerSource()`.
-- Functions used by the worker must stay in lockstep with their main-thread counterparts; if you change card placement (`findRowForCard`, `resolvePlacement`, etc.), update both definitions (search for the duplicated code string) before testing.
-- Worker coordination assumes deterministic seeds from `createRng` and periodic flushes (`flushProgress`, `recordDelta`); maintain those contracts when changing iteration pacing.
+## Bootstrap & observers
+- `createAndMount()` builds the panel, spins a gentle heartbeat (`refreshStateAndMetrics()` every 800 ms), then polls for the BGA log container up to 240 tries.
+- On discovery it checks `SS_NEW_ROUND_FLAG`/`getRoundSignature()` to decide whether to restore or reset storage, seeds `liveRowsByBga` from GD, replays the current round log, and finally attaches `observeLogContainer()`.
+- The log observer mutations trigger `applyLogLine()` → `savePlayedToSession()` → `refreshStateAndMetrics()`; keep this chain intact so live updates stay synchronized.
 
-## Round lifecycle
-- New rounds are detected via session signatures (`getRoundSignature`) plus heuristics in `maybeHeuristicNewRound()`. When altering round start behavior, also check `hardResetForNewRound()` and the ready-check block inside `createAndMount()`.
-- After refresh, `createAndMount()` restores saved state, seeds rows/hand from GD, replays logs, then attaches observers. Preserve this order to avoid stale highlights or missing resets.
+## Development workflow
+- Bump both the userscript `@version` metadata and the in-file `BUILD_STAMP` whenever shipping user-visible changes so Tampermonkey clients notice updates.
+- Local testing: load the file into Tampermonkey (*Utilities → Import from file*), join a live table, and watch console output while iterating; there is no automated test harness.
+- When debugging, prefer `console.log(buildCanonicalState(true))` to inspect full tracker state instead of sampling internal structures piecemeal.
 
-## Developer workflow
-- Increment `BUILD_STAMP` when shipping meaningful behavior so users can see the build in the help panel.
-- To test locally, load the script into Tampermonkey, join a 6 Nimmt game on BoardGameArena, and use the browser console to call `refreshStateAndMetrics()` or `hardResetForNewRound()` while watching DOM + console output.
-- There are no automated tests; rely on live-table smoke checks and console logging (e.g., `console.log(buildCanonicalState(true))`) when debugging solver state.
+## Handy console hooks
+- `refreshStateAndMetrics()` re-runs the full sync (GD scan → heuristics → UI redraw) and is safe to spam during development.
+- `hardResetForNewRound()` clears round storage and forces a clean bootstrap cycle; great for testing round transitions.
+- `renderUndercutList()` and `updateCardsUI()` can be invoked manually after mutating prototype data if you need to validate UI without waiting for observers.

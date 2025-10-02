@@ -2,6 +2,16 @@
 
 Tampermonkey userscript that enhances BoardGameArena's **6 Nimmt!** tables with live card tracking, round detection, and an ISMCTS-based recommendation panel.
 
+## Features
+
+- **Live board reconstruction.** Mirrors BoardGameArena's game data so every row, bullhead count, and captured stack stays accurate even if you reconnect mid-round.
+- **Card knowledge tracking.** Promotes cards through `unknown → my hand → played`, remembers reveals from the log, and persists per-round state in `sessionStorage` so information doesn't vanish on refresh.
+- **Round lifecycle awareness.** Detects new rounds through table signatures and log heuristics, then resets highlights and bookkeeping automatically.
+- **ISMCTS recommendation engine.** Runs determinized simulations in a Web Worker to rank your hand, exposes progress stats, and highlights the undercut list in the UI.
+- **Draggable, resizable control panel.** The tracker UI docks in the corner, remembers layout + solver settings via `localStorage`, and can be minimized when you want it out of the way.
+- **Metrics and undercut table.** Surfaces solver scores, undercut chances, and quick-read color highlights so you can act fast during timed turns.
+- **Observer-friendly architecture.** Hooks into BoardGameArena log events and DOM mutations, automatically syncing the tracker when the official interface updates.
+
 ## Quick start (first-time setup)
 
 1. **Install Tampermonkey.** Grab the extension for your browser from [tampermonkey.net](https://www.tampermonkey.net/).
