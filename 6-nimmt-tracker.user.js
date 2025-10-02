@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.2
+// @version      1.2.3
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -49,6 +49,7 @@
   let tableMeta = null;
   let canonicalStateCache = null;
   let roundRevealCounts = Object.create(null);
+  let opponentInitialHandGuess = Object.create(null);
   let prevTableCount = null;
   let isReplaying = false;
 
@@ -531,6 +532,7 @@
 
   function resetRoundRevealCounts() {
     roundRevealCounts = Object.create(null);
+    opponentInitialHandGuess = Object.create(null);
     clearSolverCache();
   }
 
@@ -952,8 +954,21 @@
     const players = baseIds.map((id, idx) => {
       const info = meta.players?.[id] || {};
       const bulls = meta.bullsById?.[id];
-      const reveals = roundRevealCounts[id] || 0;
-      const bgaHandCount = meta.handCounts?.[id];
+      const revealsRaw = roundRevealCounts[id];
+      const reveals = Number.isFinite(revealsRaw) ? revealsRaw : 0;
+      const bgaHandCountRaw = meta.handCounts?.[id];
+      const bgaHandCount = Number.isFinite(bgaHandCountRaw) ? Math.max(0, bgaHandCountRaw) : null;
+
+      if (Number.isFinite(bgaHandCount) && Number.isFinite(reveals)) {
+        const inferredInitial = bgaHandCount + reveals;
+        if (Number.isFinite(inferredInitial) && inferredInitial >= 0) {
+          const prevInitial = opponentInitialHandGuess[id];
+          if (!Number.isFinite(prevInitial) || inferredInitial > prevInitial) {
+            opponentInitialHandGuess[id] = inferredInitial;
+          }
+        }
+      }
+
       return {
         id,
         seat: idx,
@@ -974,23 +989,50 @@
     const opponentHandCounts = {};
     for (const id of baseIds) {
       if (id === myId) continue;
-      const reveals = roundRevealCounts[id] || 0;
-      const bgaCount = meta.handCounts?.[id];
+      const revealsRaw = roundRevealCounts[id];
+      const reveals = Number.isFinite(revealsRaw) ? revealsRaw : 0;
+      const bgaCountRaw = meta.handCounts?.[id];
+      const bgaCount = Number.isFinite(bgaCountRaw) ? Math.max(0, bgaCountRaw) : null;
+
+      let initialEstimate = null;
+      if (Number.isFinite(bgaCount) && Number.isFinite(reveals)) {
+        const inferredInitial = bgaCount + reveals;
+        if (Number.isFinite(inferredInitial) && inferredInitial >= 0) {
+          initialEstimate = inferredInitial;
+        }
+      }
+
+      const cachedInitial = opponentInitialHandGuess[id];
+      if (!Number.isFinite(initialEstimate) && Number.isFinite(cachedInitial)) {
+        initialEstimate = cachedInitial;
+      }
+      if (!Number.isFinite(initialEstimate) && Number.isFinite(initialHandCount)) {
+        initialEstimate = initialHandCount;
+      }
+
       let remaining = null;
       let source = null;
       if (Number.isFinite(bgaCount)) {
         remaining = bgaCount;
         source = 'bga';
-      } else if (Number.isFinite(initialHandCount)) {
-        remaining = Math.max(initialHandCount - (Number.isFinite(reveals) ? reveals : 0), 0);
+      } else if (Number.isFinite(initialEstimate) && Number.isFinite(reveals)) {
+        remaining = Math.max(initialEstimate - reveals, 0);
         source = 'derived';
       }
+
+      if (Number.isFinite(initialEstimate)) {
+        const prevInitial = opponentInitialHandGuess[id];
+        if (!Number.isFinite(prevInitial) || initialEstimate > prevInitial) {
+          opponentInitialHandGuess[id] = initialEstimate;
+        }
+      }
+
       opponentHandCounts[id] = {
         remaining: Number.isFinite(remaining) ? remaining : null,
         reveals,
         source,
         fromBga: Number.isFinite(bgaCount) ? bgaCount : null,
-        initialEstimate: Number.isFinite(initialHandCount) ? initialHandCount : null
+        initialEstimate: Number.isFinite(initialEstimate) ? initialEstimate : null
       };
     }
 
@@ -998,6 +1040,191 @@
     for (const [id, count] of Object.entries(roundRevealCounts)) {
       revealSnapshot[id] = count;
     }
+
+    const cardBeliefs = Object.create(null);
+    const knowledgeByPlayer = Object.create(null);
+    const opponents = baseIds.filter(id => id !== myId);
+    if (opponents.length) {
+      const weightInfoCache = Object.create(null);
+      const resolveBeliefWeight = (id) => {
+        if (Object.prototype.hasOwnProperty.call(weightInfoCache, id)) {
+          return weightInfoCache[id];
+        }
+        const info = opponentHandCounts[id] || {};
+        let bestWeight = null;
+        let bestPriority = -Infinity;
+        let hasHardZero = false;
+        let observedSoftZero = false;
+        let softZeroPriority = -Infinity;
+        let source = 'unknown';
+
+        const consider = (value, priority, src, zeroIsHard = true) => {
+          if (!Number.isFinite(value)) return;
+          const val = Number(value);
+          if (val <= 0) {
+            if (val === 0) {
+              if (zeroIsHard) {
+                hasHardZero = true;
+                if (bestWeight == null || priority >= bestPriority) {
+                  bestWeight = 0;
+                  bestPriority = priority;
+                  source = src;
+                }
+              } else {
+                observedSoftZero = true;
+                if (priority > softZeroPriority) softZeroPriority = priority;
+              }
+            }
+            return;
+          }
+          if (bestWeight == null || priority >= bestPriority) {
+            bestWeight = val;
+            bestPriority = priority;
+            source = src;
+          }
+        };
+
+        consider(info.remaining, 6, 'remaining', true);
+        consider(info.fromBga, 5, 'bgaCount', true);
+        const metaCount = meta.handCounts?.[id];
+        if (metaCount !== info.fromBga) consider(metaCount, 5, 'metaHand', true);
+        if (Number.isFinite(info.initialEstimate) && Number.isFinite(info.reveals)) {
+          consider(info.initialEstimate - info.reveals, 4, 'initialMinusReveals', false);
+        }
+        const revealsVal = roundRevealCounts[id];
+        if (Number.isFinite(revealsVal)) {
+          let initialCandidate = info.initialEstimate;
+          if (!Number.isFinite(initialCandidate)) {
+            const cachedInitial = opponentInitialHandGuess[id];
+            if (Number.isFinite(cachedInitial)) initialCandidate = cachedInitial;
+          }
+          if (!Number.isFinite(initialCandidate) && Number.isFinite(initialHandCount)) {
+            initialCandidate = initialHandCount;
+          }
+          if (Number.isFinite(initialCandidate)) {
+            consider(initialCandidate - revealsVal, 3, 'sharedInitialMinusReveals', false);
+          }
+        }
+
+        let weight;
+        let fallback = false;
+        if (bestWeight != null) {
+          weight = bestWeight;
+          if (!hasHardZero && observedSoftZero && softZeroPriority > bestPriority) {
+            weight = 0;
+            source = 'softZero';
+          }
+        } else if (hasHardZero) {
+          weight = 0;
+          source = 'hardZero';
+        } else if (observedSoftZero) {
+          weight = 0;
+          source = 'softZero';
+        } else {
+          weight = 1;
+          fallback = true;
+          source = 'fallback';
+        }
+
+        if (!(weight >= 0)) weight = 0;
+
+        const resolved = { weight, fallback, hardZero: hasHardZero, source };
+        weightInfoCache[id] = resolved;
+        return resolved;
+      };
+
+      for (const id of opponents) {
+        knowledgeByPlayer[id] = { must: [], forbid: [] };
+      }
+
+      for (const entry of deck) {
+        if (!entry) continue;
+        if (entry.state !== 'unknown' || entry.played || entry.inMyHand) continue;
+
+        const support = [];
+        const fallbackPool = [];
+        for (const opponentId of opponents) {
+          const wInfo = resolveBeliefWeight(opponentId);
+          if (!wInfo) continue;
+          if (wInfo.weight > 0) {
+            support.push({ id: opponentId, weight: wInfo.weight });
+          } else if (!wInfo.hardZero) {
+            fallbackPool.push(opponentId);
+          }
+        }
+
+        if (!support.length) {
+          if (!fallbackPool.length) continue;
+          const share = 1 / fallbackPool.length;
+          const belief = Object.create(null);
+          for (const opponentId of fallbackPool) {
+            belief[opponentId] = share;
+          }
+          cardBeliefs[entry.card] = belief;
+          continue;
+        }
+
+        let totalWeight = 0;
+        for (const item of support) totalWeight += item.weight;
+
+        if (!(totalWeight > 0)) {
+          if (!fallbackPool.length) continue;
+          const share = 1 / fallbackPool.length;
+          const belief = Object.create(null);
+          for (const opponentId of fallbackPool) {
+            belief[opponentId] = share;
+          }
+          cardBeliefs[entry.card] = belief;
+          continue;
+        }
+
+        const belief = Object.create(null);
+        for (const item of support) {
+          belief[item.id] = item.weight / totalWeight;
+        }
+        cardBeliefs[entry.card] = belief;
+
+        const positiveIds = [];
+        for (const opponentId of opponents) {
+          const weight = belief?.[opponentId];
+          if (Number.isFinite(weight) && weight > 0) {
+            positiveIds.push(opponentId);
+          } else if (knowledgeByPlayer[opponentId]) {
+            knowledgeByPlayer[opponentId].forbid.push(entry.card);
+          }
+        }
+        if (positiveIds.length === 1) {
+          const onlyId = positiveIds[0];
+          if (knowledgeByPlayer[onlyId]) {
+            knowledgeByPlayer[onlyId].must.push(entry.card);
+          }
+        }
+      }
+
+      for (const id of opponents) {
+        const info = knowledgeByPlayer[id];
+        if (!info) continue;
+        if (info.must.length) {
+          const unique = Array.from(new Set(info.must));
+          unique.sort((a, b) => a - b);
+          info.must = unique;
+        } else {
+          delete info.must;
+        }
+        if (info.forbid.length) {
+          const unique = Array.from(new Set(info.forbid));
+          unique.sort((a, b) => a - b);
+          info.forbid = unique;
+        } else {
+          delete info.forbid;
+        }
+        if (!info.must && !info.forbid) {
+          delete knowledgeByPlayer[id];
+        }
+      }
+    }
+
+    const normalizedKnowledge = Object.keys(knowledgeByPlayer).length ? knowledgeByPlayer : null;
 
     const canonical = {
       mySeatIndex: (mySeatIndex >= 0) ? mySeatIndex : null,
@@ -1009,6 +1236,8 @@
       hand,
       deck,
       opponentHandCounts,
+      cardBeliefs,
+      knowledgeByPlayer: normalizedKnowledge,
       roundRevealCounts: revealSnapshot,
       meta,
       initialHandCount: Number.isFinite(initialHandCount) ? initialHandCount : null,
@@ -1330,6 +1559,39 @@
       parts.push('rc:');
     }
 
+    if (state.cardBeliefs && typeof state.cardBeliefs === 'object') {
+      const beliefParts = Object.keys(state.cardBeliefs)
+        .map(card => Number(card))
+        .filter(card => Number.isFinite(card))
+        .sort((a, b) => a - b)
+        .map(card => {
+          const entries = state.cardBeliefs[card] || {};
+          const inner = Object.keys(entries)
+            .map(id => id)
+            .sort((a, b) => String(a).localeCompare(String(b)))
+            .map(id => `${strVal(id)}:${numVal(entries[id])}`)
+            .join(',');
+          return `${card}:${inner}`;
+        });
+      parts.push(`cb:${beliefParts.join('|')}`);
+    } else {
+      parts.push('cb:');
+    }
+
+    if (state.knowledgeByPlayer && typeof state.knowledgeByPlayer === 'object') {
+      const knowledgeParts = Object.keys(state.knowledgeByPlayer)
+        .sort((a, b) => String(a).localeCompare(String(b)))
+        .map(id => {
+          const info = state.knowledgeByPlayer[id] || {};
+          const must = Array.isArray(info.must) ? info.must.slice().sort((a, b) => a - b) : [];
+          const forbid = Array.isArray(info.forbid) ? info.forbid.slice().sort((a, b) => a - b) : [];
+          return `${strVal(id)}:${must.join(',')}:${forbid.join(',')}`;
+        });
+      parts.push(`kp:${knowledgeParts.join('|')}`);
+    } else {
+      parts.push('kp:');
+    }
+
     return parts.join('||');
   }
 
@@ -1400,28 +1662,99 @@
       remaining = unknownCards.length - fixedTotal;
     }
 
-    const poolArr = unknownCards.slice();
-    const maxAttempts = 24;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      shuffleInPlace(poolArr, rng);
-      let offset = 0;
-      let ok = true;
-      const hands = Object.create(null);
-      for (const w of wants) {
-        const count = w.need || 0;
-        if (offset + count > poolArr.length) {
-          ok = false;
-          break;
-        }
-        const slice = poolArr.slice(offset, offset + count).sort((a, b) => a - b);
-        hands[w.id] = slice;
-        offset += count;
-      }
-      if (!ok) continue;
-      const pool = poolArr.slice(offset);
-      return { hands, pool };
+    const beliefs = state.cardBeliefs || null;
+    const knowledgeSource = state.knowledgeByPlayer || null;
+    const knowledgeSets = Object.create(null);
+    for (const opp of opponents) {
+      const info = knowledgeSource?.[opp.id] || null;
+      const mustArr = Array.isArray(info?.must) ? info.must.filter(n => Number.isFinite(n)) : [];
+      const forbidArr = Array.isArray(info?.forbid) ? info.forbid.filter(n => Number.isFinite(n)) : [];
+      knowledgeSets[opp.id] = {
+        must: mustArr.length ? new Set(mustArr) : null,
+        forbid: forbidArr.length ? new Set(forbidArr) : null
+      };
     }
-    return null;
+
+    const globalMustSet = new Set();
+    const validUnknown = new Set(unknownCards);
+    const hands = Object.create(null);
+    for (const w of wants) {
+      const normalizedNeed = Number.isFinite(w.need) ? Math.max(0, Math.floor(w.need)) : 0;
+      const knowledge = knowledgeSets[w.id];
+      const mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
+      if (mustList.length > normalizedNeed) return null;
+      for (const card of mustList) {
+        globalMustSet.add(card);
+        validUnknown.delete(card);
+      }
+      w.must = mustList.sort((a, b) => a - b);
+      w.need = Math.max(0, normalizedNeed - mustList.length);
+      hands[w.id] = w.must.slice();
+    }
+
+    const remainingCards = unknownCards.filter(card => !globalMustSet.has(card));
+    const shuffled = shuffleInPlace(remainingCards, rng);
+    const pool = [];
+
+    const pickTargetForCard = (card) => {
+      let total = 0;
+      const entries = [];
+      const belief = beliefs ? beliefs[card] : null;
+      for (const w of wants) {
+        if (!w || w.need <= 0) continue;
+        const knowledge = knowledgeSets[w.id];
+        if (knowledge?.forbid && knowledge.forbid.has(card)) continue;
+        let weight = 1;
+        if (belief && belief[w.id] != null) {
+          const val = Number(belief[w.id]);
+          if (Number.isFinite(val) && val > 0) weight = val;
+        }
+        weight *= w.need;
+        if (weight <= 0) continue;
+        entries.push({ w, weight });
+        total += weight;
+      }
+      if (total <= 0 || !entries.length) return null;
+      let pick = rng() * total;
+      if (!Number.isFinite(pick)) pick = total * 0.5;
+      for (const entry of entries) {
+        pick -= entry.weight;
+        if (pick <= 0) return entry.w;
+      }
+      return entries[entries.length - 1].w;
+    };
+
+    for (const card of shuffled) {
+      const target = pickTargetForCard(card);
+      if (!target) {
+        pool.push(card);
+        continue;
+      }
+      (hands[target.id] ||= []).push(card);
+      target.need = Math.max(0, (target.need || 0) - 1);
+    }
+
+    let shortage = false;
+    for (const w of wants) {
+      if (!w) continue;
+      let need = Math.max(0, Math.floor(w.need || 0));
+      const assigned = hands[w.id] || [];
+      while (need > 0 && pool.length) {
+        assigned.push(pool.pop());
+        need--;
+      }
+      if (need > 0) {
+        shortage = true;
+        break;
+      }
+      assigned.sort((a, b) => a - b);
+      hands[w.id] = assigned;
+      w.need = need;
+    }
+
+    if (shortage) return null;
+    pool.sort((a, b) => a - b);
+    return { hands, pool };
   }
 
   function previewPlacement(rows, card) {
@@ -1652,9 +1985,12 @@
     return -myPenalty;
   }
 
-  function createNode(card) {
+  const PUCT_EXPLORATION = 1.15;
+
+  function createNode(card, prior = 0) {
     return {
       card,
+      prior,
       visitCount: 0,
       totalReward: 0,
       children: new Map()
@@ -1663,36 +1999,15 @@
 
   function selectChild(node, rng) {
     if (!node?.children?.size) return null;
-    const unvisited = [];
-    for (const child of node.children.values()) {
-      if (child.visitCount === 0) unvisited.push(child);
-    }
-    if (unvisited.length) {
-      const pick = Math.floor(rng() * unvisited.length);
-      return unvisited[Math.min(pick, unvisited.length - 1)];
-    }
-
-    const childCount = node.children.size;
-    if (childCount > 0 && node.visitCount > 0) {
-      const targetVisits = Math.ceil(node.visitCount / childCount);
-      const underVisited = [];
-      for (const child of node.children.values()) {
-        if (child.visitCount < targetVisits) underVisited.push(child);
-      }
-      if (underVisited.length) {
-        const pick = Math.floor(rng() * underVisited.length);
-        return underVisited[Math.min(pick, underVisited.length - 1)];
-      }
-    }
-
+    const parentVisits = Math.max(1, node.visitCount);
     let best = null;
     let bestScore = -Infinity;
-    const logParent = Math.log(Math.max(1, node.visitCount));
-    const exploration = 0.8;
     for (const child of node.children.values()) {
-      const mean = child.totalReward / child.visitCount;
-      const bonus = exploration * Math.sqrt(logParent / child.visitCount);
-      const score = mean + bonus + (rng() - 0.5) * 1e-6;
+      const prior = Number.isFinite(child.prior) ? child.prior : 0;
+      const mean = child.visitCount > 0 ? (child.totalReward / child.visitCount) : 0;
+      const exploration = PUCT_EXPLORATION * prior * Math.sqrt(parentVisits) / (1 + child.visitCount);
+      const noise = (rng() - 0.5) * 1e-6;
+      const score = mean + exploration + noise;
       if (score > bestScore) {
         bestScore = score;
         best = child;
@@ -1708,9 +2023,10 @@
     const iterations = opts.iterations ?? Math.max(80, state.hand.length * 20);
     const rng = opts.rng || createRng((Date.now() ^ (state.hand.length * 131)) >>> 0);
 
-    const root = createNode(null);
+    const root = createNode(null, 1);
+    const prior = state.hand.length ? 1 / state.hand.length : 0;
     for (const card of state.hand) {
-      root.children.set(card, createNode(card));
+      root.children.set(card, createNode(card, prior));
     }
 
     let completed = 0;
@@ -2035,28 +2351,99 @@ function sampleDeterminization(state, rng) {
     remaining = unknownCards.length - fixedTotal;
   }
 
-  const poolArr = unknownCards.slice();
-  const maxAttempts = 24;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    shuffleInPlace(poolArr, rng);
-    let offset = 0;
-    let ok = true;
-    const hands = Object.create(null);
-    for (const w of wants) {
-      const count = w.need || 0;
-      if (offset + count > poolArr.length) {
-        ok = false;
-        break;
-      }
-      const slice = poolArr.slice(offset, offset + count).sort((a, b) => a - b);
-      hands[w.id] = slice;
-      offset += count;
-    }
-    if (!ok) continue;
-    const pool = poolArr.slice(offset);
-    return { hands, pool };
+  const beliefs = state.cardBeliefs || null;
+  const knowledgeSource = state.knowledgeByPlayer || null;
+  const knowledgeSets = Object.create(null);
+  for (const opp of opponents) {
+    const info = knowledgeSource?.[opp.id] || null;
+    const mustArr = Array.isArray(info?.must) ? info.must.filter(n => Number.isFinite(n)) : [];
+    const forbidArr = Array.isArray(info?.forbid) ? info.forbid.filter(n => Number.isFinite(n)) : [];
+    knowledgeSets[opp.id] = {
+      must: mustArr.length ? new Set(mustArr) : null,
+      forbid: forbidArr.length ? new Set(forbidArr) : null
+    };
   }
-  return null;
+
+  const globalMustSet = new Set();
+  const validUnknown = new Set(unknownCards);
+  const hands = Object.create(null);
+  for (const w of wants) {
+    const normalizedNeed = Number.isFinite(w.need) ? Math.max(0, Math.floor(w.need)) : 0;
+    const knowledge = knowledgeSets[w.id];
+    const mustList = knowledge?.must ? Array.from(knowledge.must).filter(card => validUnknown.has(card)) : [];
+    if (mustList.length > normalizedNeed) return null;
+    for (const card of mustList) {
+      globalMustSet.add(card);
+      validUnknown.delete(card);
+    }
+    w.must = mustList.sort((a, b) => a - b);
+    w.need = Math.max(0, normalizedNeed - mustList.length);
+    hands[w.id] = w.must.slice();
+  }
+
+  const remainingCards = unknownCards.filter(card => !globalMustSet.has(card));
+  const shuffled = shuffleInPlace(remainingCards, rng);
+  const pool = [];
+
+  const pickTargetForCard = (card) => {
+    let total = 0;
+    const entries = [];
+    const belief = beliefs ? beliefs[card] : null;
+    for (const w of wants) {
+      if (!w || w.need <= 0) continue;
+      const knowledge = knowledgeSets[w.id];
+      if (knowledge?.forbid && knowledge.forbid.has(card)) continue;
+      let weight = 1;
+      if (belief && belief[w.id] != null) {
+        const val = Number(belief[w.id]);
+        if (Number.isFinite(val) && val > 0) weight = val;
+      }
+      weight *= w.need;
+      if (weight <= 0) continue;
+      entries.push({ w, weight });
+      total += weight;
+    }
+    if (total <= 0 || !entries.length) return null;
+    let pick = rng() * total;
+    if (!Number.isFinite(pick)) pick = total * 0.5;
+    for (const entry of entries) {
+      pick -= entry.weight;
+      if (pick <= 0) return entry.w;
+    }
+    return entries[entries.length - 1].w;
+  };
+
+  for (const card of shuffled) {
+    const target = pickTargetForCard(card);
+    if (!target) {
+      pool.push(card);
+      continue;
+    }
+    (hands[target.id] ||= []).push(card);
+    target.need = Math.max(0, (target.need || 0) - 1);
+  }
+
+  let shortage = false;
+  for (const w of wants) {
+    if (!w) continue;
+    let need = Math.max(0, Math.floor(w.need || 0));
+    const assigned = hands[w.id] || [];
+    while (need > 0 && pool.length) {
+      assigned.push(pool.pop());
+      need--;
+    }
+    if (need > 0) {
+      shortage = true;
+      break;
+    }
+    assigned.sort((a, b) => a - b);
+    hands[w.id] = assigned;
+    w.need = need;
+  }
+
+  if (shortage) return null;
+  pool.sort((a, b) => a - b);
+  return { hands, pool };
 }
 function previewPlacement(rows, card) {
   const placement = findRowForCard(rows, card);
@@ -2281,9 +2668,11 @@ function simulatePlayout(state, determinization, rootCard, rng) {
   const myPenalty = bullsByPlayer[myId] || 0;
   return -myPenalty;
 }
-function createNode(card) {
+const PUCT_EXPLORATION = 1.15;
+function createNode(card, prior = 0) {
   return {
     card,
+    prior,
     visitCount: 0,
     totalReward: 0,
     children: new Map()
@@ -2291,36 +2680,15 @@ function createNode(card) {
 }
 function selectChild(node, rng) {
   if (!node?.children?.size) return null;
-  const unvisited = [];
-  for (const child of node.children.values()) {
-    if (child.visitCount === 0) unvisited.push(child);
-  }
-  if (unvisited.length) {
-    const pick = Math.floor(rng() * unvisited.length);
-    return unvisited[Math.min(pick, unvisited.length - 1)];
-  }
-
-  const childCount = node.children.size;
-  if (childCount > 0 && node.visitCount > 0) {
-    const targetVisits = Math.ceil(node.visitCount / childCount);
-    const underVisited = [];
-    for (const child of node.children.values()) {
-      if (child.visitCount < targetVisits) underVisited.push(child);
-    }
-    if (underVisited.length) {
-      const pick = Math.floor(rng() * underVisited.length);
-      return underVisited[Math.min(pick, underVisited.length - 1)];
-    }
-  }
-
+  const parentVisits = Math.max(1, node.visitCount);
   let best = null;
   let bestScore = -Infinity;
-  const logParent = Math.log(Math.max(1, node.visitCount));
-  const exploration = 0.8;
   for (const child of node.children.values()) {
-    const mean = child.totalReward / child.visitCount;
-    const bonus = exploration * Math.sqrt(logParent / child.visitCount);
-    const score = mean + bonus + (rng() - 0.5) * 1e-6;
+    const prior = Number.isFinite(child.prior) ? child.prior : 0;
+    const mean = child.visitCount > 0 ? (child.totalReward / child.visitCount) : 0;
+    const exploration = PUCT_EXPLORATION * prior * Math.sqrt(parentVisits) / (1 + child.visitCount);
+    const noise = (rng() - 0.5) * 1e-6;
+    const score = mean + exploration + noise;
     if (score > bestScore) {
       bestScore = score;
       best = child;
@@ -2329,12 +2697,13 @@ function selectChild(node, rng) {
   return best;
 }
 function initializeRoot(state) {
-  const root = createNode(null);
+  const root = createNode(null, 1);
   if (Array.isArray(state?.hand)) {
     const cards = state.hand.slice().sort((a, b) => a - b);
+    const prior = cards.length ? 1 / cards.length : 0;
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
-      root.children.set(card, createNode(card));
+      root.children.set(card, createNode(card, prior));
     }
   }
   return root;
@@ -2342,24 +2711,51 @@ function initializeRoot(state) {
 const DEFAULT_TIME_MS = 140;
 let currentTask = null;
 let stopRequested = false;
+const TREE_CACHE_LIMIT = 6;
+const treeCache = new Map();
+const treeOrder = [];
+
+function cacheTree(signature, root) {
+  if (!signature || !root) return;
+  treeCache.set(signature, { root, ts: performance.now() });
+  const idx = treeOrder.indexOf(signature);
+  if (idx !== -1) treeOrder.splice(idx, 1);
+  treeOrder.push(signature);
+  while (treeOrder.length > TREE_CACHE_LIMIT) {
+    const oldSig = treeOrder.shift();
+    if (oldSig && oldSig !== signature) treeCache.delete(oldSig);
+  }
+}
+
 function prepareTask(payload) {
   if (!payload || !payload.state || !Array.isArray(payload.state.hand) || !payload.state.hand.length) {
     currentTask = null;
     return null;
   }
+  const signature = payload.signature || null;
   if (!currentTask || currentTask.requestId !== payload.requestId) {
     const seed = (payload.seed >>> 0) || 0x9e3779b9;
+    let root = null;
+    if (signature && treeCache.has(signature)) {
+      const cached = treeCache.get(signature);
+      root = cached?.root ? cached.root : null;
+    }
+    if (!root) root = initializeRoot(payload.state);
     currentTask = {
       requestId: payload.requestId,
+      signature,
       state: payload.state,
       rng: createRng(seed),
-      root: initializeRoot(payload.state),
+      root,
       deltaStats: new Map(),
       deltaIterations: 0
     };
     stopRequested = false;
+    cacheTree(signature, root);
   } else {
     currentTask.state = payload.state;
+    currentTask.signature = signature;
+    if (signature) cacheTree(signature, currentTask.root);
   }
   return currentTask;
 }
@@ -2413,6 +2809,7 @@ function runIterations(task, timeMs) {
   flushProgress(task);
   const reason = stopRequested ? 'stopped' : 'timeout';
   stopRequested = false;
+  cacheTree(task.signature, task.root);
   postMessage({ type: 'done', requestId: task.requestId, reason });
 }
 self.onmessage = (event) => {
@@ -2466,6 +2863,9 @@ self.onmessage = (event) => {
       this.totalIterations = 0;
       this.nextWorkerId = 1;
       this.seedCounter = (Math.random() * 0x7fffffff) >>> 0;
+        this.signatureCache = new Map();
+        this.signatureOrder = [];
+        this.signatureCacheLimit = clamp(Math.floor(opts.signatureCacheLimit || 6), 1, 16);
       if (this.enabled) {
         this.ensureWorkerPool();
       }
@@ -2515,6 +2915,7 @@ self.onmessage = (event) => {
     setCanonicalState(state, signature) {
       if (!state || !Array.isArray(state.hand) || !state.hand.length || !Array.isArray(state.rows) || !state.rows.length) {
         if (this.currentState) {
+          if (this.currentSignature) this.updateSignatureCache(this.currentSignature);
           this.broadcastStop(this.requestId);
           this.currentState = null;
           this.currentSignature = null;
@@ -2532,12 +2933,19 @@ self.onmessage = (event) => {
         return;
       }
 
+      if (this.currentSignature && this.currentSignature !== sig) {
+        this.updateSignatureCache(this.currentSignature);
+      }
+
       const prevRequest = this.requestId;
       this.currentState = state;
       this.currentSignature = sig;
       this.requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-      this.aggregatedStats.clear();
-      this.totalIterations = 0;
+      const restored = this.restoreSignatureCache(sig);
+      if (!restored) {
+        this.aggregatedStats = new Map();
+        this.totalIterations = 0;
+      }
       if (prevRequest) this.broadcastStop(prevRequest);
 
       if (this.enabled) {
@@ -2566,6 +2974,8 @@ self.onmessage = (event) => {
       this.requestId = null;
       this.aggregatedStats.clear();
       this.totalIterations = 0;
+      this.signatureCache.clear();
+      this.signatureOrder = [];
       if (prevRequest) this.broadcastStop(prevRequest);
       for (const info of this.workers) {
         info.busy = false;
@@ -2624,6 +3034,7 @@ self.onmessage = (event) => {
         type: 'run',
         requestId: this.requestId,
         state: this.currentState,
+        signature: this.currentSignature,
         seed,
         timeMs: this.timeSliceMs
       };
@@ -2696,6 +3107,7 @@ self.onmessage = (event) => {
         existing.totalReward += totalReward;
         this.aggregatedStats.set(card, existing);
       }
+      this.updateSignatureCache();
     }
 
     getAggregatedSnapshot(handCards = []) {
@@ -2715,6 +3127,47 @@ self.onmessage = (event) => {
         iterations: this.totalIterations,
         running: this.enabled && !!this.currentState && !!this.requestId && this.workers.length > 0
       };
+    }
+
+    updateSignatureCache(signature = this.currentSignature) {
+      if (!signature) return;
+      const snapshot = [];
+      for (const [card, info] of this.aggregatedStats.entries()) {
+        snapshot.push([card, { visits: info.visits, totalReward: info.totalReward }]);
+      }
+      this.signatureCache.set(signature, {
+        stats: snapshot,
+        iterations: this.totalIterations,
+        ts: Date.now()
+      });
+      this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
+      this.signatureOrder.push(signature);
+      while (this.signatureOrder.length > this.signatureCacheLimit) {
+        const oldSig = this.signatureOrder.shift();
+        if (oldSig && oldSig !== signature) this.signatureCache.delete(oldSig);
+      }
+    }
+
+    restoreSignatureCache(signature) {
+      const cached = signature ? this.signatureCache.get(signature) : null;
+      if (!cached) {
+        this.aggregatedStats = new Map();
+        this.totalIterations = 0;
+        return false;
+      }
+      const next = new Map();
+      for (const [card, info] of cached.stats) {
+        if (!info) continue;
+        next.set(card, {
+          visits: Number.isFinite(info.visits) ? info.visits : 0,
+          totalReward: Number.isFinite(info.totalReward) ? info.totalReward : 0
+        });
+      }
+      this.aggregatedStats = next;
+      this.totalIterations = Number.isFinite(cached.iterations) ? cached.iterations : 0;
+      this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
+      this.signatureOrder.push(signature);
+      return true;
     }
   }
 
