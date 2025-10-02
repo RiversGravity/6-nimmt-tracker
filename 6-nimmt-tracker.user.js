@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.4
+// @version      1.2.5
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1147,6 +1147,16 @@
         return null;
       };
 
+      const mustCapacityRemaining = Object.create(null);
+      for (const id of opponents) {
+        const cap = estimateRemaining(id);
+        if (Number.isFinite(cap) && cap >= 0) {
+          mustCapacityRemaining[id] = Math.floor(cap);
+        } else {
+          mustCapacityRemaining[id] = Infinity;
+        }
+      }
+
       for (const entry of deck) {
         if (!entry) continue;
         if (entry.state !== 'unknown' || entry.played || entry.inMyHand) continue;
@@ -1195,19 +1205,36 @@
         cardBeliefs[entry.card] = belief;
 
         const positiveIds = [];
+        const eligiblePositiveIds = [];
         for (const opponentId of opponents) {
           const weight = belief?.[opponentId];
-          if (Number.isFinite(weight) && weight > 0) {
-            positiveIds.push(opponentId);
-          } else if (knowledgeByPlayer[opponentId]) {
-            knowledgeByPlayer[opponentId].forbid.push(entry.card);
+          if (!Number.isFinite(weight) || weight <= 0) continue;
+          positiveIds.push(opponentId);
+          const remainingCap = mustCapacityRemaining[opponentId];
+          if (!(Number.isFinite(remainingCap) && remainingCap <= 0)) {
+            eligiblePositiveIds.push(opponentId);
           }
         }
-        if (positiveIds.length === 1) {
-          const onlyId = positiveIds[0];
-          const capacity = estimateRemaining(onlyId);
-          if (knowledgeByPlayer[onlyId] && (!(Number.isFinite(capacity)) || capacity > 0)) {
+
+        if (eligiblePositiveIds.length) {
+          const forbidSet = new Set(eligiblePositiveIds);
+          for (const opponentId of opponents) {
+            if (forbidSet.has(opponentId)) continue;
+            if (knowledgeByPlayer[opponentId]) {
+              knowledgeByPlayer[opponentId].forbid.push(entry.card);
+            }
+          }
+        }
+
+        if (eligiblePositiveIds.length === 1) {
+          const onlyId = eligiblePositiveIds[0];
+          const remainingCap = mustCapacityRemaining[onlyId];
+          const canAssignMust = !(Number.isFinite(remainingCap) && remainingCap <= 0);
+          if (knowledgeByPlayer[onlyId] && canAssignMust) {
             knowledgeByPlayer[onlyId].must.push(entry.card);
+            if (Number.isFinite(remainingCap)) {
+              mustCapacityRemaining[onlyId] = Math.max(0, remainingCap - 1);
+            }
           }
         }
       }
