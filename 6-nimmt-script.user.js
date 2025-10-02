@@ -7,6 +7,7 @@
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
 // @supportURL   https://github.com/RiversGravity/6-nimmt-tracker/issues
 // @downloadURL  https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js
+// @updateURL    https://raw.githubusercontent.com/RiversGravity/6-nimmt-tracker/main/6-nimmt-script.user.js
 // @match        *://boardgamearena.com/*
 // @match        *://*.boardgamearena.com/*
 // @grant        none
