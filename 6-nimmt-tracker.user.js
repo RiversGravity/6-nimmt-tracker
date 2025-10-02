@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.2.6
+// @version      1.2.7
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1216,13 +1216,15 @@
           }
         }
 
-        if (eligiblePositiveIds.length) {
-          const forbidSet = new Set(eligiblePositiveIds);
-          for (const opponentId of opponents) {
-            if (forbidSet.has(opponentId)) continue;
-            if (knowledgeByPlayer[opponentId]) {
-              knowledgeByPlayer[opponentId].forbid.push(entry.card);
-            }
+        const eligibleSet = new Set(eligiblePositiveIds);
+        for (const opponentId of opponents) {
+          if (eligibleSet.has(opponentId)) continue;
+          const remainingCap = mustCapacityRemaining[opponentId];
+          const noCapacity = Number.isFinite(remainingCap) && remainingCap <= 0;
+          const weightInfo = resolveBeliefWeight(opponentId);
+          const definitiveZero = !!(weightInfo && weightInfo.hardZero);
+          if ((noCapacity || definitiveZero) && knowledgeByPlayer[opponentId]) {
+            knowledgeByPlayer[opponentId].forbid.push(entry.card);
           }
         }
 
