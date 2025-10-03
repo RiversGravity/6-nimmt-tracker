@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.4.0
+// @version      1.4.1
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1266,6 +1266,11 @@
 
     const normalizedKnowledge = Object.keys(knowledgeByPlayer).length ? knowledgeByPlayer : null;
 
+    const phaseInfo = computePhaseInfo(rows, hand, opponentHandCounts, deck, {
+      players,
+      initialHandCount
+    });
+
     const canonical = {
       mySeatIndex: (mySeatIndex >= 0) ? mySeatIndex : null,
       myPlayerId: myId,
@@ -1286,6 +1291,93 @@
 
     canonicalStateCache = canonical;
     return canonical;
+  }
+
+  function computePhaseInfo(rows, hand, opponentHandCounts, deck, opts = {}) {
+    const rowList = Array.isArray(rows) ? rows : [];
+    const rowLengths = rowList.map(row => (Array.isArray(row) ? row.length : 0));
+    const rowsAtFive = rowLengths.filter(len => len >= 5).length;
+    const rowsNearFive = rowLengths.filter(len => len >= 4).length;
+    const rowEnds = rowList.map(row => (Array.isArray(row) && row.length) ? row[row.length - 1] : null);
+
+    const myHand = Array.isArray(hand) ? hand.slice() : [];
+    const myHandSize = myHand.length;
+    let minGap = Infinity;
+    if (myHand.length && rowEnds.length) {
+      for (let i = 0; i < myHand.length; i++) {
+        const card = myHand[i];
+        for (let j = 0; j < rowEnds.length; j++) {
+          const end = rowEnds[j];
+          if (!Number.isFinite(end) || card <= end) continue;
+          const diff = card - end;
+          if (diff < minGap) minGap = diff;
+        }
+      }
+    }
+    if (!Number.isFinite(minGap) || minGap === Infinity) minGap = null;
+
+    let totalOpponentCards = 0;
+    let opponentCount = 0;
+    if (opponentHandCounts && typeof opponentHandCounts === 'object') {
+      for (const key of Object.keys(opponentHandCounts)) {
+        const val = Number(opponentHandCounts[key]);
+        if (!Number.isFinite(val)) continue;
+        totalOpponentCards += val;
+        opponentCount += 1;
+      }
+    }
+    const averageOpponentHand = opponentCount ? (totalOpponentCards / opponentCount) : 0;
+    const deckCount = Array.isArray(deck) ? deck.length : 0;
+
+    let phase = 'early';
+    if (rowsAtFive >= 2 || averageOpponentHand <= 2.5 || myHandSize <= 2) {
+      phase = 'late';
+    } else if (rowsNearFive >= 2 || averageOpponentHand <= 4 || myHandSize <= 4) {
+      phase = 'mid';
+    }
+
+    let walkDownScore = 0;
+    walkDownScore += rowsAtFive * 0.35;
+    walkDownScore += rowsNearFive * 0.18;
+    if (Number.isFinite(minGap)) {
+      if (minGap <= 6) walkDownScore += 0.2;
+      if (minGap <= 4) walkDownScore += 0.25;
+    }
+    if (averageOpponentHand > 0) {
+      if (averageOpponentHand <= 3) walkDownScore += 0.25;
+      else if (averageOpponentHand <= 4) walkDownScore += 0.12;
+    }
+    if (deckCount === 0 && (totalOpponentCards + myHandSize) <= Math.max(1, (opponentCount + 1) * 3)) {
+      walkDownScore += 0.15;
+    }
+    if (myHandSize <= 2) walkDownScore += 0.15;
+    walkDownScore = clamp(walkDownScore, 0, 1);
+
+    const walkDownLikely = walkDownScore >= 0.55;
+    const walkDownWatch = !walkDownLikely && walkDownScore >= 0.35;
+
+    let tempo = 'steady';
+    if (walkDownLikely) tempo = 'walk-down';
+    else if (walkDownWatch) tempo = 'walk-down-risk';
+    else if (!rowsAtFive && !rowsNearFive) tempo = 'walk-up';
+
+    const shouldDumpLow = walkDownWatch && Number.isFinite(minGap) && minGap <= 7;
+
+    return {
+      phase,
+      rowsAtFive,
+      rowsNearFive,
+      myHandSize,
+      averageOpponentHand: opponentCount ? Math.round(averageOpponentHand * 100) / 100 : null,
+      totalOpponentCards,
+      minGapSelf: Number.isFinite(minGap) ? minGap : null,
+      deckCount,
+      walkDownScore: Math.round(walkDownScore * 100) / 100,
+      walkDownLikely,
+      walkDownWatch,
+      tempo,
+      shouldDumpLow
+    };
   }
 
   // ---------- Solver / ISMCTS ----------
@@ -1545,6 +1637,13 @@
       parts.push(`d:${deckParts.join('|')}`);
     } else {
       parts.push('d:');
+    }
+
+    const phase = state.phaseInfo || null;
+    if (phase) {
+      parts.push(`ph:${strVal(phase.phase)}:${phase.walkDownLikely ? '1' : '0'}:${numVal(phase.rowsAtFive)}:${numVal(phase.rowsNearFive)}:${strVal(phase.tempo)}`);
+    } else {
+      parts.push('ph:');
     }
 
     if (Array.isArray(state.playerOrder)) {
@@ -4257,6 +4356,13 @@ self.onmessage = (event) => {
       html += `<tr${cls}><td>${row.card}</td><td>${evTotalStr}</td><td>${evNowStr}</td><td>${evLaterStr}</td><td>${samplesStr}</td><td>${row.under}</td></tr>`;
     }
     html += '</tbody></table>';
+
+    if (phaseInfo) {
+      const phaseLabel = phaseInfo.walkDownLikely ? `${phaseInfo.phase || 'late'} (walk-down)` : (phaseInfo.phase || 'unknown');
+      const tempoLabel = phaseInfo.tempo || 'steady';
+      const watchFlag = (!phaseInfo.walkDownLikely && phaseInfo.walkDownWatch) ? ' (watch)' : '';
+      html += `<div style="margin-top:4px;font-size:11px;color:#555;">Phase: ${phaseLabel}; Tempo: ${tempoLabel}${watchFlag}</div>`;
+    }
 
     const sampleCount = solverSnapshot.iterations ?? 0;
     let statusNote = '';

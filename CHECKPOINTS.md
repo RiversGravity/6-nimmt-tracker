@@ -82,3 +82,23 @@ This file records the git tags we use as recovery points, along with the command
 
 3. Append the new tag details to this file.
 
+### checkpoint-2025-10-03
+
+- **Description:** Prior to phase detection and walk-down handling work
+- **Inspect:**
+
+  `ash
+  git show checkpoint-2025-10-03 --stat
+  `
+
+- **Create branch at checkpoint:**
+
+  `ash
+  git checkout -b restore-checkpoint-2025-10-03 checkpoint-2025-10-03
+  `
+
+- **Reset current branch to checkpoint (destructive):**
+
+  `ash
+  git reset --hard checkpoint-2025-10-03
+  `
