@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.8
+// @version      1.3.9
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -2304,6 +2304,12 @@
   function buildSolverWorkerSource() {
     return `
 'use strict';
+function clamp(val, min, max) {
+  if (!Number.isFinite(val)) return min;
+  if (val < min) return min;
+  if (val > max) return max;
+  return val;
+}
 const CARD_COUNT = ${CARD_COUNT};
 const BULL_HEADS = (() => {
   const arr = new Array(CARD_COUNT + 1).fill(1);
