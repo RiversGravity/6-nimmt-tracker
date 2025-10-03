@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.7
+// @version      1.3.8
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1945,10 +1945,51 @@
     return Number.isFinite(bestIdx) ? bestIdx : null;
   }
 
+  
+  const ROLLOUT_POLICY_DEFAULTS = {
+    self: { epsilon: 0.2, temperature: 0.35 },
+    opponent: { epsilon: 0.28, temperature: 0.45 }
+  };
+
+  function normalizeRolloutPolicy(policy) {
+    const result = {
+      self: {
+        epsilon: ROLLOUT_POLICY_DEFAULTS.self.epsilon,
+        temperature: ROLLOUT_POLICY_DEFAULTS.self.temperature
+      },
+      opponent: {
+        epsilon: ROLLOUT_POLICY_DEFAULTS.opponent.epsilon,
+        temperature: ROLLOUT_POLICY_DEFAULTS.opponent.temperature
+      }
+    };
+    if (policy && typeof policy === 'object') {
+      const self = policy.self;
+      if (self && typeof self === 'object') {
+        if (Number.isFinite(self.epsilon)) result.self.epsilon = clamp(self.epsilon, 0, 0.9);
+        if (Number.isFinite(self.temperature)) result.self.temperature = clamp(self.temperature, 0.05, 1.8);
+      }
+      const opponent = policy.opponent;
+      if (opponent && typeof opponent === 'object') {
+        if (Number.isFinite(opponent.epsilon)) result.opponent.epsilon = clamp(opponent.epsilon, 0, 0.9);
+        if (Number.isFinite(opponent.temperature)) result.opponent.temperature = clamp(opponent.temperature, 0.05, 1.8);
+      }
+    }
+    return result;
+  }
+
+  function cloneRolloutPolicy(policy) {
+    const normalized = normalizeRolloutPolicy(policy);
+    return {
+      self: { epsilon: normalized.self.epsilon, temperature: normalized.self.temperature },
+      opponent: { epsilon: normalized.opponent.epsilon, temperature: normalized.opponent.temperature }
+    };
+  }
+
   function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     if (!hand || !hand.length) return null;
-    const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.2;
-    const temperature = Number.isFinite(opts.temperature) ? Math.max(0.05, Math.min(opts.temperature, 1.5)) : 0.45;
+    const epsilon = Number.isFinite(opts.epsilon) ? clamp(opts.epsilon, 0, 1) : 0.2;
+    const rawTemp = Number.isFinite(opts.temperature) ? opts.temperature : 0.45;
+    const baseTemperature = clamp(rawTemp, 0.05, 2);
     const scored = [];
 
     for (let i = 0; i < hand.length; i++) {
@@ -1967,18 +2008,16 @@
     });
 
     const bestScore = scored[0].score;
-    const tolerance = 0.12;
-    const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
-
-    const weightedPick = (list) => {
+    const pickWeighted = (list, multiplier = 1) => {
       if (!list.length) return null;
+      const temp = clamp(baseTemperature * (Number.isFinite(multiplier) ? multiplier : 1), 0.05, 3);
       let total = 0;
-      const weights = [];
+      const weights = new Array(list.length);
       for (let i = 0; i < list.length; i++) {
         const entry = list[i];
-        const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
-        const weight = Math.exp(-diff / temperature);
-        weights.push(weight);
+        const diff = Number.isFinite(entry.score) ? Math.max(0, Math.min(entry.score - bestScore, 8)) : 0;
+        const weight = Math.exp(-diff / temp);
+        weights[i] = weight;
         total += weight;
       }
       if (!(total > 0)) return list[0] || null;
@@ -1991,21 +2030,23 @@
       return list[list.length - 1];
     };
 
-    let pickEntry = null;
-    if (rng() < epsilon && scored.length > 1) {
-      pickEntry = weightedPick(scored);
-    } else {
-      pickEntry = weightedPick(topGroup);
+    const baseEntry = pickWeighted(scored, 1);
+    if (!baseEntry) {
+      const fallback = scored[0];
+      return fallback ? fallback.card : null;
     }
 
-    if (!pickEntry && scored.length) {
-      pickEntry = scored[0];
+    if (scored.length > 1 && rng() < epsilon) {
+      const exploratory = 1.35 + rng() * 0.85;
+      const altEntry = pickWeighted(scored, exploratory);
+      const pick = altEntry || baseEntry || scored[0];
+      return pick ? pick.card : null;
     }
 
-    return pickEntry ? pickEntry.card : null;
+    return baseEntry.card;
   }
 
-  function simulatePlayout(state, determinization, rootCard, rng) {
+  function simulatePlayout(state, determinization, rootCard, rng, policy) {
     if (!state || !Array.isArray(state.rows) || !state.rows.length) return null;
     const myId = state.myPlayerId;
     if (!myId) return null;
@@ -2013,6 +2054,10 @@
       ? state.playerOrder.slice()
       : (state.players || []).map(p => p.id);
     if (!players.length) return null;
+
+    const rolloutPolicy = normalizeRolloutPolicy(policy || state?.rolloutPolicy);
+    const selfPolicy = rolloutPolicy.self;
+    const opponentPolicy = rolloutPolicy.opponent;
 
     let rows = state.rows.map(r => (Array.isArray(r) ? r.slice() : []));
     const hands = new Map();
@@ -2031,12 +2076,12 @@
     const seatIndex = new Map();
     for (let i = 0; i < players.length; i++) seatIndex.set(players[i], i);
 
-  const bullsByPlayer = Object.create(null);
-  for (const id of players) bullsByPlayer[id] = 0;
+    const bullsByPlayer = Object.create(null);
+    for (const id of players) bullsByPlayer[id] = 0;
 
-  let forcedCardPending = true;
-  let rootResolved = false;
-  let immediatePenalty = null;
+    let forcedCardPending = true;
+    let rootResolved = false;
+    let immediatePenalty = null;
     let turns = 0;
     const maxTurns = 200;
 
@@ -2052,14 +2097,14 @@
             card = rootCard;
             forcedCardPending = false;
           } else if (hand.length) {
-            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08, temperature: 0.35 });
+            card = chooseCardHeuristic(hand, rows, rng, selfPolicy);
             if (card != null) {
               const idx = hand.indexOf(card);
               if (idx >= 0) hand.splice(idx, 1);
             }
           }
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28, temperature: 0.45 });
+          card = chooseCardHeuristic(hand, rows, rng, opponentPolicy);
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
@@ -2151,6 +2196,7 @@
 
     const iterations = opts.iterations ?? Math.max(80, state.hand.length * 20);
     const rng = opts.rng || createRng((Date.now() ^ (state.hand.length * 131)) >>> 0);
+    const rolloutPolicy = normalizeRolloutPolicy(opts.policy || state?.rolloutPolicy);
 
     const root = createNode(null, 1);
     const prior = state.hand.length ? 1 / state.hand.length : 0;
@@ -2168,7 +2214,7 @@
       if (!determinization) continue;
       const child = selectChild(root, rng);
       if (!child) break;
-      const outcome = simulatePlayout(state, determinization, child.card, rng);
+      const outcome = simulatePlayout(state, determinization, child.card, rng, rolloutPolicy);
       if (!outcome || !Number.isFinite(outcome.reward)) continue;
       const { reward, immediatePenalty = 0, futurePenalty = 0 } = outcome;
       child.visitCount += 1;
@@ -2224,6 +2270,23 @@
     return { results, best, iterations: completed };
   }
 
+  function stateIsFragileForImmediate(state) {
+    if (!state || !Array.isArray(state.rows) || !state.rows.length) return false;
+    const rows = state.rows;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (Array.isArray(row) && row.length >= 4) return true;
+    }
+    if (!Array.isArray(state.hand) || !state.hand.length) return false;
+    for (let i = 0; i < state.hand.length; i++) {
+      const card = state.hand[i];
+      if (!Number.isFinite(card)) continue;
+      const placement = previewPlacement(rows, card);
+      if (placement?.forcedTake) return true;
+    }
+    return false;
+  }
+
   /**
    * Inline worker source builder.
    *
@@ -2233,7 +2296,7 @@
    * `applyPlacementAndScore`, `deriveInitialHandSize`,
    * `computeRemainingForPlayer`, `createRng`, `shuffleInPlace`,
   * `sampleDeterminization`, `previewPlacement`, `evaluateCardPlacement`,
-  * `pickForcedRowIndex`, `chooseCardHeuristic`,
+  * `pickForcedRowIndex`, `normalizeRolloutPolicy`, `cloneRolloutPolicy`, `chooseCardHeuristic`,
    * `simulatePlayout`, `createNode`, `selectChild`, `flushProgress`,
    * `recordDelta`, and `runIterations`. When adding new shared logic, update the
    * shared helper section first and mirror the changes here before stringifying.
@@ -2738,10 +2801,51 @@ function pickForcedRowIndex(placement, rows) {
 
   return Number.isFinite(bestIdx) ? bestIdx : null;
 }
+
+const ROLLOUT_POLICY_DEFAULTS = {
+  self: { epsilon: 0.2, temperature: 0.35 },
+  opponent: { epsilon: 0.28, temperature: 0.45 }
+};
+
+function normalizeRolloutPolicy(policy) {
+  const result = {
+    self: {
+      epsilon: ROLLOUT_POLICY_DEFAULTS.self.epsilon,
+      temperature: ROLLOUT_POLICY_DEFAULTS.self.temperature
+    },
+    opponent: {
+      epsilon: ROLLOUT_POLICY_DEFAULTS.opponent.epsilon,
+      temperature: ROLLOUT_POLICY_DEFAULTS.opponent.temperature
+    }
+  };
+  if (policy && typeof policy === 'object') {
+    const self = policy.self;
+    if (self && typeof self === 'object') {
+      if (Number.isFinite(self.epsilon)) result.self.epsilon = clamp(self.epsilon, 0, 0.9);
+      if (Number.isFinite(self.temperature)) result.self.temperature = clamp(self.temperature, 0.05, 1.8);
+    }
+    const opponent = policy.opponent;
+    if (opponent && typeof opponent === 'object') {
+      if (Number.isFinite(opponent.epsilon)) result.opponent.epsilon = clamp(opponent.epsilon, 0, 0.9);
+      if (Number.isFinite(opponent.temperature)) result.opponent.temperature = clamp(opponent.temperature, 0.05, 1.8);
+    }
+  }
+  return result;
+}
+
+function cloneRolloutPolicy(policy) {
+  const normalized = normalizeRolloutPolicy(policy);
+  return {
+    self: { epsilon: normalized.self.epsilon, temperature: normalized.self.temperature },
+    opponent: { epsilon: normalized.opponent.epsilon, temperature: normalized.opponent.temperature }
+  };
+}
+
 function chooseCardHeuristic(hand, rows, rng, opts = {}) {
   if (!hand || !hand.length) return null;
-  const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.2;
-  const temperature = Number.isFinite(opts.temperature) ? Math.max(0.05, Math.min(opts.temperature, 1.5)) : 0.45;
+  const epsilon = Number.isFinite(opts.epsilon) ? clamp(opts.epsilon, 0, 1) : 0.2;
+  const rawTemp = Number.isFinite(opts.temperature) ? opts.temperature : 0.45;
+  const baseTemperature = clamp(rawTemp, 0.05, 2);
   const scored = [];
 
   for (let i = 0; i < hand.length; i++) {
@@ -2760,18 +2864,16 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
   });
 
   const bestScore = scored[0].score;
-  const tolerance = 0.12;
-  const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
-
-  const weightedPick = (list) => {
+  const pickWeighted = (list, multiplier = 1) => {
     if (!list.length) return null;
+    const temp = clamp(baseTemperature * (Number.isFinite(multiplier) ? multiplier : 1), 0.05, 3);
     let total = 0;
-    const weights = [];
+    const weights = new Array(list.length);
     for (let i = 0; i < list.length; i++) {
       const entry = list[i];
-      const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
-      const weight = Math.exp(-diff / temperature);
-      weights.push(weight);
+      const diff = Number.isFinite(entry.score) ? Math.max(0, Math.min(entry.score - bestScore, 8)) : 0;
+      const weight = Math.exp(-diff / temp);
+      weights[i] = weight;
       total += weight;
     }
     if (!(total > 0)) return list[0] || null;
@@ -2784,20 +2886,22 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     return list[list.length - 1];
   };
 
-  let pickEntry = null;
-  if (rng() < epsilon && scored.length > 1) {
-    pickEntry = weightedPick(scored);
-  } else {
-    pickEntry = weightedPick(topGroup);
+  const baseEntry = pickWeighted(scored, 1);
+  if (!baseEntry) {
+    const fallback = scored[0];
+    return fallback ? fallback.card : null;
   }
 
-  if (!pickEntry && scored.length) {
-    pickEntry = scored[0];
+  if (scored.length > 1 && rng() < epsilon) {
+    const exploratory = 1.35 + rng() * 0.85;
+    const altEntry = pickWeighted(scored, exploratory);
+    const pick = altEntry || baseEntry || scored[0];
+    return pick ? pick.card : null;
   }
 
-  return pickEntry ? pickEntry.card : null;
+  return baseEntry.card;
 }
-function simulatePlayout(state, determinization, rootCard, rng) {
+function simulatePlayout(state, determinization, rootCard, rng, policy) {
   if (!state || !Array.isArray(state.rows) || !state.rows.length) return null;
   const myId = state.myPlayerId;
   if (!myId) return null;
@@ -2805,6 +2909,10 @@ function simulatePlayout(state, determinization, rootCard, rng) {
     ? state.playerOrder.slice()
     : (state.players || []).map(p => p.id);
   if (!players.length) return null;
+
+  const rolloutPolicy = normalizeRolloutPolicy(policy || state?.rolloutPolicy);
+  const selfPolicy = rolloutPolicy.self;
+  const opponentPolicy = rolloutPolicy.opponent;
 
   let rows = state.rows.map(r => (Array.isArray(r) ? r.slice() : []));
   const hands = new Map();
@@ -2839,24 +2947,24 @@ function simulatePlayout(state, determinization, rootCard, rng) {
     for (const id of players) {
       const hand = hands.get(id) || [];
       let card = null;
-        if (id === myId) {
-          if (forcedCardPending) {
-            card = rootCard;
-            forcedCardPending = false;
-          } else if (hand.length) {
-            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08, temperature: 0.35 });
-            if (card != null) {
-              const idx = hand.indexOf(card);
-              if (idx >= 0) hand.splice(idx, 1);
-            }
-          }
+      if (id === myId) {
+        if (forcedCardPending) {
+          card = rootCard;
+          forcedCardPending = false;
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28, temperature: 0.45 });
+          card = chooseCardHeuristic(hand, rows, rng, selfPolicy);
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
           }
         }
+      } else if (hand.length) {
+        card = chooseCardHeuristic(hand, rows, rng, opponentPolicy);
+        if (card != null) {
+          const idx = hand.indexOf(card);
+          if (idx >= 0) hand.splice(idx, 1);
+        }
+      }
       if (card != null) {
         plays.push({ playerId: id, card });
         anyPlay = true;
@@ -2970,6 +3078,7 @@ function prepareTask(payload) {
     return null;
   }
   const signature = payload.signature || null;
+  const policy = normalizeRolloutPolicy(payload.policy || payload.state?.rolloutPolicy);
   if (!currentTask || currentTask.requestId !== payload.requestId) {
     const seed = (payload.seed >>> 0) || 0x9e3779b9;
     let root = null;
@@ -2984,6 +3093,7 @@ function prepareTask(payload) {
       state: payload.state,
       rng: createRng(seed),
       root,
+      policy,
       deltaStats: new Map(),
       deltaIterations: 0
     };
@@ -2992,6 +3102,7 @@ function prepareTask(payload) {
   } else {
     currentTask.state = payload.state;
     currentTask.signature = signature;
+    currentTask.policy = policy;
     if (signature) cacheTree(signature, currentTask.root);
   }
   return currentTask;
@@ -3035,6 +3146,7 @@ function runIterations(task, timeMs) {
   if (!task) return;
   const state = task.state;
   const rng = task.rng;
+  const policy = task.policy;
   const limit = Number.isFinite(timeMs) && timeMs > 0 ? timeMs : DEFAULT_TIME_MS;
   const deadline = performance.now() + limit;
   while (performance.now() < deadline) {
@@ -3043,7 +3155,7 @@ function runIterations(task, timeMs) {
     if (!determinization) continue;
     const child = selectChild(task.root, rng);
     if (!child) break;
-    const outcome = simulatePlayout(state, determinization, child.card, rng);
+    const outcome = simulatePlayout(state, determinization, child.card, rng, policy);
     if (!outcome || !Number.isFinite(outcome.reward)) continue;
     const { reward, immediatePenalty = 0, futurePenalty = 0 } = outcome;
     child.visitCount += 1;
@@ -3097,7 +3209,7 @@ self.onmessage = (event) => {
     return url;
   }
 
-  const SOLVER_CACHE_SCHEMA_VERSION = 2;
+  const SOLVER_CACHE_SCHEMA_VERSION = 3;
 
   class SolverCoordinator {
     constructor(opts = {}) {
@@ -3115,6 +3227,13 @@ self.onmessage = (event) => {
       this.totalIterations = 0;
       this.nextWorkerId = 1;
       this.seedCounter = (Math.random() * 0x7fffffff) >>> 0;
+      this.baseRolloutPolicy = normalizeRolloutPolicy(null);
+      Object.freeze(this.baseRolloutPolicy.self);
+      Object.freeze(this.baseRolloutPolicy.opponent);
+      Object.freeze(this.baseRolloutPolicy);
+      this.currentPolicy = null;
+      this.policyOverrides = new Map();
+      this.guardState = new Map();
         this.signatureCache = new Map();
         this.signatureOrder = [];
         this.signatureCacheLimit = clamp(Math.floor(opts.signatureCacheLimit || 6), 1, 16);
@@ -3165,28 +3284,36 @@ self.onmessage = (event) => {
     }
 
     setCanonicalState(state, signature) {
+      const prevSignature = this.currentSignature;
       if (!state || !Array.isArray(state.hand) || !state.hand.length || !Array.isArray(state.rows) || !state.rows.length) {
         if (this.currentState) {
           if (this.currentSignature) this.updateSignatureCache(this.currentSignature);
           this.broadcastStop(this.requestId);
-          this.currentState = null;
-          this.currentSignature = null;
-          this.requestId = null;
-          this.aggregatedStats.clear();
-          this.totalIterations = 0;
-          this.onUpdate();
         }
+        this.currentState = null;
+        this.currentSignature = null;
+        this.requestId = null;
+        this.currentPolicy = null;
+        this.aggregatedStats.clear();
+        this.totalIterations = 0;
+        this.policyOverrides.clear();
+        this.guardState.clear();
+        this.onUpdate();
         return;
       }
 
       const sig = signature || computeSolverSignature(state);
       if (this.currentSignature === sig && this.requestId) {
+        this.currentState = state;
+        this.refreshCurrentPolicy(state);
         this.restartWorkers();
         return;
       }
 
-      if (this.currentSignature && this.currentSignature !== sig) {
-        this.updateSignatureCache(this.currentSignature);
+      if (prevSignature && prevSignature !== sig) {
+        this.updateSignatureCache(prevSignature);
+        this.policyOverrides.delete(prevSignature);
+        this.guardState.delete(prevSignature);
       }
 
       const prevRequest = this.requestId;
@@ -3197,7 +3324,10 @@ self.onmessage = (event) => {
       if (!restored) {
         this.aggregatedStats = new Map();
         this.totalIterations = 0;
+        this.policyOverrides.delete(sig);
+        this.guardState.delete(sig);
       }
+      this.refreshCurrentPolicy(state);
       if (prevRequest) this.broadcastStop(prevRequest);
 
       if (this.enabled) {
@@ -3226,6 +3356,9 @@ self.onmessage = (event) => {
       this.requestId = null;
       this.aggregatedStats.clear();
       this.totalIterations = 0;
+      this.currentPolicy = null;
+      this.policyOverrides.clear();
+      this.guardState.clear();
       this.signatureCache.clear();
       this.signatureOrder = [];
       if (prevRequest) this.broadcastStop(prevRequest);
@@ -3282,13 +3415,19 @@ self.onmessage = (event) => {
     scheduleRun(info) {
       if (!this.enabled || !this.currentState || !this.requestId || !info) return;
       const seed = this.nextSeed(info.id);
+      const basePolicy = this.currentPolicy || this.resolveActivePolicy(this.currentSignature);
+      const activePolicy = cloneRolloutPolicy(basePolicy);
+      const statePayload = this.currentState
+        ? { ...this.currentState, rolloutPolicy: activePolicy }
+        : null;
       const payload = {
         type: 'run',
         requestId: this.requestId,
-        state: this.currentState,
+        state: statePayload,
         signature: this.currentSignature,
         seed,
-        timeMs: this.timeSliceMs
+        timeMs: this.timeSliceMs,
+        policy: activePolicy
       };
       info.busy = true;
       info.requestId = this.requestId;
@@ -3305,6 +3444,66 @@ self.onmessage = (event) => {
       const base = this.seedCounter ^ ((Date.now() & 0xffffffff) >>> 0);
       const mixed = (base ^ ((workerId * 0x45d9f3b) >>> 0)) >>> 0;
       return mixed || 0x9e3779b9;
+    }
+
+    resolveActivePolicy(signature = this.currentSignature) {
+      const key = signature || null;
+      const source = key ? (this.policyOverrides.get(key) || this.baseRolloutPolicy) : this.baseRolloutPolicy;
+      return cloneRolloutPolicy(source);
+    }
+
+    refreshCurrentPolicy(baseState = this.currentState) {
+      if (!this.currentSignature) return null;
+      const policy = this.resolveActivePolicy(this.currentSignature);
+      this.currentPolicy = policy;
+      if (baseState) {
+        this.currentState = { ...baseState, rolloutPolicy: policy };
+      }
+      return policy;
+    }
+
+    createGuardOverride() {
+      const base = this.baseRolloutPolicy;
+      const override = cloneRolloutPolicy(base);
+      override.self.epsilon = clamp(base.self.epsilon * 1.4 + 0.02, 0, 0.8);
+      override.self.temperature = clamp(base.self.temperature * 1.25 + 0.05, 0.05, 1.2);
+      override.opponent.epsilon = clamp(base.opponent.epsilon * 1.2 + 0.01, 0, 0.85);
+      override.opponent.temperature = clamp(base.opponent.temperature * 1.15 + 0.05, 0.05, 1.3);
+      return override;
+    }
+
+    evaluateGuardrail() {
+      if (!this.currentSignature || !this.currentState) return;
+      let totalImmediate = 0;
+      let totalVisits = 0;
+      for (const info of this.aggregatedStats.values()) {
+        const visits = Number.isFinite(info?.visits) ? info.visits : 0;
+        const immediate = Number.isFinite(info?.totalImmediate) ? info.totalImmediate : 0;
+        totalVisits += visits;
+        totalImmediate += immediate;
+      }
+      if (totalVisits === 0) return;
+
+      const signature = this.currentSignature;
+      const guard = this.guardState.get(signature) || { applied: false };
+      if (Math.abs(totalImmediate) > 1e-6) {
+        if (guard.applied) {
+          this.policyOverrides.delete(signature);
+          this.guardState.delete(signature);
+          this.refreshCurrentPolicy();
+          this.restartWorkers();
+        }
+        return;
+      }
+
+      if (guard.applied) return;
+      if (!stateIsFragileForImmediate(this.currentState)) return;
+
+      const override = this.createGuardOverride();
+      this.policyOverrides.set(signature, override);
+      this.guardState.set(signature, { applied: true, boostedAt: Date.now() });
+      this.refreshCurrentPolicy();
+      this.restartWorkers();
     }
 
     broadcastStop(requestId) {
@@ -3363,6 +3562,7 @@ self.onmessage = (event) => {
         existing.totalFuture = (existing.totalFuture || 0) + totalFuture;
         this.aggregatedStats.set(card, existing);
       }
+      this.evaluateGuardrail();
       this.updateSignatureCache();
     }
 
@@ -3405,11 +3605,17 @@ self.onmessage = (event) => {
           totalFuture
         }]);
       }
+      const override = signature ? this.policyOverrides.get(signature) : null;
+      const guard = signature ? this.guardState.get(signature) : null;
+      const storedOverride = override ? cloneRolloutPolicy(override) : null;
+      const guardSnapshot = guard ? { applied: !!guard.applied, boostedAt: guard.boostedAt || Date.now() } : null;
       this.signatureCache.set(signature, {
         stats: snapshot,
         iterations: this.totalIterations,
         ts: Date.now(),
-        schema: SOLVER_CACHE_SCHEMA_VERSION
+        schema: SOLVER_CACHE_SCHEMA_VERSION,
+        policyOverride: storedOverride,
+        guard: guardSnapshot
       });
       this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
       this.signatureOrder.push(signature);
@@ -3428,6 +3634,8 @@ self.onmessage = (event) => {
         }
         this.aggregatedStats = new Map();
         this.totalIterations = 0;
+        this.policyOverrides.delete(signature);
+        this.guardState.delete(signature);
         return false;
       }
 
@@ -3451,7 +3659,21 @@ self.onmessage = (event) => {
         this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
         this.aggregatedStats = new Map();
         this.totalIterations = 0;
+        this.policyOverrides.delete(signature);
+        this.guardState.delete(signature);
         return false;
+      }
+
+      if (cached.policyOverride) {
+        this.policyOverrides.set(signature, cloneRolloutPolicy(cached.policyOverride));
+      } else {
+        this.policyOverrides.delete(signature);
+      }
+
+      if (cached.guard && cached.guard.applied) {
+        this.guardState.set(signature, { applied: true, boostedAt: cached.guard.boostedAt || Date.now() });
+      } else {
+        this.guardState.delete(signature);
       }
 
       this.aggregatedStats = next;
