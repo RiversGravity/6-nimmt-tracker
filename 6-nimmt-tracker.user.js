@@ -3059,6 +3059,8 @@ self.onmessage = (event) => {
     return url;
   }
 
+  const SOLVER_CACHE_SCHEMA_VERSION = 2;
+
   class SolverCoordinator {
     constructor(opts = {}) {
       this.hardwareConcurrency = clamp(Math.floor(opts.hardwareConcurrency || DETECTED_HW_THREADS), 1, DETECTED_HW_THREADS);
@@ -3368,7 +3370,8 @@ self.onmessage = (event) => {
       this.signatureCache.set(signature, {
         stats: snapshot,
         iterations: this.totalIterations,
-        ts: Date.now()
+        ts: Date.now(),
+        schema: SOLVER_CACHE_SCHEMA_VERSION
       });
       this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
       this.signatureOrder.push(signature);
@@ -3380,7 +3383,11 @@ self.onmessage = (event) => {
 
     restoreSignatureCache(signature) {
       const cached = signature ? this.signatureCache.get(signature) : null;
-      if (!cached) {
+      if (!cached || cached.schema !== SOLVER_CACHE_SCHEMA_VERSION) {
+        if (cached) {
+          this.signatureCache.delete(signature);
+          this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
+        }
         this.aggregatedStats = new Map();
         this.totalIterations = 0;
         return false;
