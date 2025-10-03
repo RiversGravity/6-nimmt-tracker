@@ -1,36 +1,41 @@
 # 6 Nimmt Tracker – AI Guide
 
-## Architecture snapshot
-- `6-nimmt-tracker.user.js` is the single source, wrapped in a top-level IIFE organized into build constants, state stores, data ingestion, UI, solver, and observers. Keep helpers adjacent to the block they support.
-- `createAndMount()` bootstraps the panel, polls for the BGA log container (≤240 tries), then schedules the 800 ms heartbeat via `refreshStateAndMetrics()`.
-- `buildCanonicalState()` is the hub for derived data; route new logic through it instead of querying `g_game` / `gameui` directly.
+## Quick orientation
+- `6-nimmt-tracker.user.js` is the entire app; sections are laid out constants → state → persistence → data ingestion → UI → solver → observers. Keep any new helper beside the block it supports.
+- `createAndMount()` runs once, mounts the panel, spins up the 800 ms heartbeat via `refreshStateAndMetrics()`, and polls (≤240 tries) every 500 ms until the BGA log container appears.
+- Canonical data flows through `buildCanonicalState()`; derive new metrics from its output instead of poking `g_game` / DOM nodes directly.
 
-## Game data sources
-- `findGameDataObject()` is the only approved doorway to BoardGameArena snapshots. Downstream helpers (`collectPlayerMetadataFromGD`, `captureRowsWithBgaMapFromGD`, `seedLiveRowsFromGD`) keep live and replay flows identical.
-- `attachMetaToLiveRows()` decorates `liveRowsByBga` with ordered player info so placement logic, solver runs, and UI renderings stay aligned. Update `getOrderedPlayerIds()` when player metadata changes.
-- When adding metadata, mirror the shape fed into `buildSolverWorkerSource()` so the inline worker sees the same structures as the main thread.
+## Game data & canonical state
+- Always fetch BGA snapshots with `findGameDataObject()`; the trio `collectPlayerMetadataFromGD()` / `captureRowsWithBgaMapFromGD()` / `seedLiveRowsFromGD()` keeps live and replay pipelines identical.
+- `attachMetaToLiveRows()` enriches `liveRowsByBga` with seat order; if you add metadata, update `getOrderedPlayerIds()` so solver, placement, and UI stay aligned.
+- `snapshotRows()` plus `liveHandArray()` feed `buildCanonicalState()`, which also reconciles opponent hand estimates via `roundRevealCounts` and `opponentInitialHandGuess`.
+- Cache invalidation is explicit—call `invalidateCanonicalState()` whenever you mutate rows, card state, or player metadata.
 
-## State progression & persistence
-- Card knowledge is monotonic via `setCardState()` (`unknown → my_hand → played`) across `cardState`, `playedSet`, `prevHand`, and `roundRevealCounts`.
-- Per-round artifacts live in `sessionStorage` (`SS_PLAYED`, `SS_ROUND_SIG`, `SS_NEW_ROUND_FLAG`); layout and solver preferences persist in `localStorage` (`LS_UI_STATE`). Always use helpers (`savePlayedToSession()`, `saveUIState()`, etc.) rather than raw storage calls.
-- `hardResetForNewRound()` and `maybeHeuristicNewRound()` coordinate resets. When changing round detection, update both the heuristics and the storage-reset path.
+## Persistence & round lifecycle
+- Card knowledge moves monotonically through `setCardState()` (`unknown → my_hand → played`), with backing sets like `playedSet` and `prevHand`; never demote a card.
+- Per-round storage lives in `sessionStorage` (`SS_PLAYED`, `SS_ROUND_SIG`, `SS_NEW_ROUND_FLAG`); write via helpers such as `savePlayedToSession()`, `setNewRoundFlag()`, `checkAndClearNewRoundFlag()`, and reset with `clearRoundStorage()`.
+- Round detection couples `maybeHeuristicNewRound()` with `hardResetForNewRound()`; keep both paths in sync when you tweak heuristics or signature handling (the reset path also reseeds starters and updates `SS_ROUND_SIG`).
+- UI layout + solver preferences persist in `localStorage` (`LS_UI_STATE`); always route changes through `saveUIState()` / `loadUIState()`.
 
-## Log & replay pipeline
-- `observeLogContainer()` listens for DOM mutations and funnels each line into `applyLogLine()`. That function promotes card states, updates `roundRevealCounts` via `noteCardRevealFromName()`, and delegates structural row changes to `applyLogToLiveRows()`.
-- `applyLogToLiveRows()` is the lone mutator of `liveRowsByBga`; whenever you add regex cases, update both append/start/take branches and ensure rows stay sorted.
-- Page load recovery runs through `replayExistingLogForCurrentRound()`, which rebuilds rows from historical logs before reseeding from the current GD snapshot. Keep replay and live flows in sync when changing heuristics.
+## Log ingestion & replay
+- `observeLogContainer()` is the sole MutationObserver; each new log line hits `applyLogLine()`, which updates `roundRevealCounts` (`noteCardRevealFromName()`) and defers row edits to `applyLogToLiveRows()`.
+- `applyLogToLiveRows()` must remain the only writer of `liveRowsByBga`; add regex branches for append/start/take together and keep rows sorted by end card.
+- On load, `replayExistingLogForCurrentRound()` rebuilds state from history before handing off to live observers; always mirror logic between replay and live flows when heuristics evolve.
+- `seedLiveRowsFromGD()`, `scanTablePlayed()`, and `scanMyHand()` prime state on every heartbeat, so keep them lean.
 
-## UI & metrics
-- The tracker panel mounts once in `createTrackerUI()`; redraws happen through `updateCardsUI()` and `renderUndercutList()`, both expecting canonical state output. Avoid ad-hoc DOM reads inside refresh routines.
-- `refreshStateAndMetrics()` performs GD scans (`scanMyHand`, `scanTablePlayed`), heuristic checks, and UI updates. New observers should schedule this instead of duplicating the pipeline.
-- `showStatus()` gives short-lived banners—useful when introducing workflow changes (e.g., new round alerts).
+## UI refresh pipeline
+- `createTrackerUI()` builds the draggable panel once; `updateCardsUI()` and `renderUndercutList()` rerender based on canonical snapshots—avoid fresh DOM queries inside these.
+- `refreshStateAndMetrics()` is the heartbeat: `syncTableMeta()` + GD scans + heuristics + UI repaint. New observers should schedule this rather than duplicating the pipeline.
+- Temporary banners come from `showStatus()`; messages auto-dismiss, so keep them punchy.
+- Respect the `recommendedCards` set when touching card styling; it’s populated alongside solver metrics in `renderUndercutList()`.
 
-## Solver playbook
-- `ensureSolverCoordinator()` spins up `SolverCoordinator`, which manages worker caps (default = detected hardware threads), deterministic seeds, and aggregated stats via `applyDeltas()`.
-- The worker source comes from `buildSolverWorkerSource()`; keep mirrored helpers (`findRowForCard`, `resolvePlacement`, RNG utilities) bitwise identical between main thread and worker to preserve determinism.
-- Solver pacing relies on `flushProgress()` / `recordDelta()` checkpoints and `recommendedCards` highlighting tolerance (±0.05 EV). Preserve these when altering ISMCTS loops or UI thresholds.
+## Solver loop
+- `ensureSolverCoordinator()` brings up the inline worker with a cap equal to detected hardware threads; adjust `DEFAULT_WORKER_COUNT` only if you also patch the worker selector UI.
+- Worker code is emitted by `buildSolverWorkerSource()`; helpers like `findRowForCard`, `resolvePlacement`, and RNG utilities must stay byte-identical between main thread and worker to preserve determinism.
+- Solver progress flows through `recordDelta()` / `flushProgress()` into `solverSnapshot`; update both if you change telemetry shape or pacing.
+- Card recommendations highlight within ±0.05 EV (`recommendedCards`); keep tolerance and UI cue in sync if you expose new metrics.
 
 ## Development workflow
-- Ship changes by bumping both the metadata `@version` header and the `BUILD_STAMP` constant; otherwise Tampermonkey clients will not auto-update.
-- Manual testing only: import the script into Tampermonkey (Utilities → Import from file), join a 6 Nimmt table, and watch the console. Handy hooks: `refreshStateAndMetrics()`, `hardResetForNewRound()`, `renderUndercutList()`, `updateCardsUI()`.
-- UI layout state persists via `LS_UI_STATE`. To reset panel positioning during debugging, delete that key from `localStorage`.
+- Develop locally by importing the script into Tampermonkey (*Utilities → Import from file*) and use console hooks (`refreshStateAndMetrics()`, `hardResetForNewRound()`, `renderUndercutList()`, `updateCardsUI()`) while observing a live table.
+- Ship changes by bumping both the metadata `@version` header and the `BUILD_STAMP` constant; without both, Tampermonkey clients will not pick up updates.
+- There’s no automated test suite—manual QA means joining a 6 Nimmt table, validating card states, solver stats, and persistence across refreshes and new round triggers.
