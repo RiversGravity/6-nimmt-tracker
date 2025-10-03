@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.9
+// @version      1.4.0
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -2171,8 +2171,30 @@
     };
   }
 
-  function selectChild(node, rng) {
+  function selectChild(node, rng, opts = {}) {
     if (!node?.children?.size) return null;
+    const uniformRoot = !!opts.uniformRoot && node && node.card == null;
+    if (uniformRoot) {
+      let minVisits = Infinity;
+      const leastVisited = [];
+      for (const child of node.children.values()) {
+        const visits = Number.isFinite(child.visitCount) ? child.visitCount : 0;
+        if (visits < minVisits) {
+          minVisits = visits;
+          leastVisited.length = 0;
+          leastVisited.push(child);
+        } else if (visits === minVisits) {
+          leastVisited.push(child);
+        }
+      }
+      if (leastVisited.length) {
+        let r = rng();
+        if (!Number.isFinite(r) || r < 0 || r >= 1) r = Math.random();
+        const pickIdx = Math.floor(r * leastVisited.length) % leastVisited.length;
+        const chosen = leastVisited[pickIdx];
+        if (chosen) return chosen;
+      }
+    }
     const parentVisits = Math.max(1, node.visitCount);
     let best = null;
     let bestScore = -Infinity;
@@ -2212,7 +2234,7 @@
       attempts++;
       const determinization = sampleDeterminization(state, rng);
       if (!determinization) continue;
-      const child = selectChild(root, rng);
+      const child = selectChild(root, rng, { uniformRoot: true });
       if (!child) break;
       const outcome = simulatePlayout(state, determinization, child.card, rng, rolloutPolicy);
       if (!outcome || !Number.isFinite(outcome.reward)) continue;
@@ -3029,8 +3051,30 @@ function createNode(card, prior = 0) {
     children: new Map()
   };
 }
-function selectChild(node, rng) {
+function selectChild(node, rng, opts = {}) {
   if (!node?.children?.size) return null;
+  const uniformRoot = !!opts.uniformRoot && node && node.card == null;
+  if (uniformRoot) {
+    let minVisits = Infinity;
+    const leastVisited = [];
+    for (const child of node.children.values()) {
+      const visits = Number.isFinite(child.visitCount) ? child.visitCount : 0;
+      if (visits < minVisits) {
+        minVisits = visits;
+        leastVisited.length = 0;
+        leastVisited.push(child);
+      } else if (visits === minVisits) {
+        leastVisited.push(child);
+      }
+    }
+    if (leastVisited.length) {
+      let r = rng();
+      if (!Number.isFinite(r) || r < 0 || r >= 1) r = Math.random();
+      const pickIdx = Math.floor(r * leastVisited.length) % leastVisited.length;
+      const chosen = leastVisited[pickIdx];
+      if (chosen) return chosen;
+    }
+  }
   const parentVisits = Math.max(1, node.visitCount);
   let best = null;
   let bestScore = -Infinity;
@@ -3159,7 +3203,7 @@ function runIterations(task, timeMs) {
     if (stopRequested) break;
     const determinization = sampleDeterminization(state, rng);
     if (!determinization) continue;
-    const child = selectChild(task.root, rng);
+    const child = selectChild(task.root, rng, { uniformRoot: true });
     if (!child) break;
     const outcome = simulatePlayout(state, determinization, child.card, rng, policy);
     if (!outcome || !Number.isFinite(outcome.reward)) continue;
