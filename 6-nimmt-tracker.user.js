@@ -2745,8 +2745,7 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
 
   let pickEntry;
   if (rng() < epsilon && scored.length > 1) {
-    const span = Math.min(4, scored.length);
-    let idx = Math.floor(rng() * span);
+    let idx = Math.floor(rng() * scored.length);
     if (!Number.isFinite(idx) || idx < 0) idx = 0;
     if (idx >= scored.length) idx = scored.length - 1;
     pickEntry = scored[idx];
