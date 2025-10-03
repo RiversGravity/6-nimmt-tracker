@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.4.1
+// @version      1.4.2
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1285,6 +1285,7 @@
       knowledgeByPlayer: normalizedKnowledge,
       roundRevealCounts: revealSnapshot,
       meta,
+      phaseInfo,
       initialHandCount: Number.isFinite(initialHandCount) ? initialHandCount : null,
       generatedAt: Date.now()
     };
