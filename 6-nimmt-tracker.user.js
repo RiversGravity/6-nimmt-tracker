@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.2
+// @version      1.3.3
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -3334,13 +3334,13 @@ self.onmessage = (event) => {
         const existing = this.aggregatedStats.get(key);
         if (existing) {
           stats.set(key, {
-            visits: existing.visits,
-            totalReward: existing.totalReward,
-            totalImmediate: existing.totalImmediate,
-            totalFuture: existing.totalFuture
+            visits: Number.isFinite(existing.visits) ? existing.visits : 0,
+            totalReward: Number.isFinite(existing.totalReward) ? existing.totalReward : 0,
+            totalImmediate: Number.isFinite(existing.totalImmediate) ? existing.totalImmediate : null,
+            totalFuture: Number.isFinite(existing.totalFuture) ? existing.totalFuture : null
           });
         } else {
-          stats.set(key, { visits: 0, totalReward: 0, totalImmediate: 0, totalFuture: 0 });
+          stats.set(key, { visits: 0, totalReward: 0, totalImmediate: null, totalFuture: null });
         }
       }
       return {
@@ -3354,11 +3354,15 @@ self.onmessage = (event) => {
       if (!signature) return;
       const snapshot = [];
       for (const [card, info] of this.aggregatedStats.entries()) {
+        const visits = Number.isFinite(info && info.visits) ? info.visits : 0;
+        const totalReward = Number.isFinite(info && info.totalReward) ? info.totalReward : 0;
+        const totalImmediate = Number.isFinite(info && info.totalImmediate) ? info.totalImmediate : null;
+        const totalFuture = Number.isFinite(info && info.totalFuture) ? info.totalFuture : null;
         snapshot.push([card, {
-          visits: info.visits,
-          totalReward: info.totalReward,
-          totalImmediate: info.totalImmediate,
-          totalFuture: info.totalFuture
+          visits,
+          totalReward,
+          totalImmediate,
+          totalFuture
         }]);
       }
       this.signatureCache.set(signature, {
@@ -3381,16 +3385,30 @@ self.onmessage = (event) => {
         this.totalIterations = 0;
         return false;
       }
+
       const next = new Map();
+      let incompatible = false;
       for (const [card, info] of cached.stats) {
         if (!info) continue;
-        next.set(card, {
-          visits: Number.isFinite(info.visits) ? info.visits : 0,
-          totalReward: Number.isFinite(info.totalReward) ? info.totalReward : 0,
-          totalImmediate: Number.isFinite(info.totalImmediate) ? info.totalImmediate : 0,
-          totalFuture: Number.isFinite(info.totalFuture) ? info.totalFuture : 0
-        });
+        const visits = Number.isFinite(info.visits) ? info.visits : 0;
+        const totalReward = Number.isFinite(info.totalReward) ? info.totalReward : 0;
+        const totalImmediate = Number.isFinite(info.totalImmediate) ? info.totalImmediate : null;
+        const totalFuture = Number.isFinite(info.totalFuture) ? info.totalFuture : null;
+        if (visits > 0 && (totalImmediate == null || totalFuture == null)) {
+          incompatible = true;
+          break;
+        }
+        next.set(card, { visits, totalReward, totalImmediate, totalFuture });
       }
+
+      if (incompatible) {
+        this.signatureCache.delete(signature);
+        this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
+        this.aggregatedStats = new Map();
+        this.totalIterations = 0;
+        return false;
+      }
+
       this.aggregatedStats = next;
       this.totalIterations = Number.isFinite(cached.iterations) ? cached.iterations : 0;
       this.signatureOrder = this.signatureOrder.filter(sig => sig !== signature);
