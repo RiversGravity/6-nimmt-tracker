@@ -46,6 +46,26 @@ This file records the git tags we use as recovery points, along with the command
   git reset --hard checkpoint-2025-10-02b
   ```
 
+### `checkpoint-20250206`
+
+- **Description:** Baseline tracker before solver exploration upgrades
+- **Inspect:**
+
+  ```bash
+  git show checkpoint-20250206 --stat
+  ```
+
+- **Create branch at checkpoint:**
+
+  ```bash
+  git checkout -b restore-checkpoint-20250206 checkpoint-20250206
+  ```
+
+- **Reset current branch to checkpoint (destructive):**
+
+  ```bash
+  git reset --hard checkpoint-20250206
+  ```
 ## Adding new checkpoints
 
 1. Create a tag with a clear description:
@@ -61,3 +81,4 @@ This file records the git tags we use as recovery points, along with the command
    ```
 
 3. Append the new tag details to this file.
+
