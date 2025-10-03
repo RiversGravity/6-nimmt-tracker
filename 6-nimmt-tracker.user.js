@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.5
+// @version      1.3.6
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1969,21 +1969,39 @@
     const tolerance = 0.12;
     const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
 
-    let pickEntry;
-    if (rng() < epsilon && scored.length > 1) {
-      const span = Math.min(4, scored.length);
-      let idx = Math.floor(rng() * span);
-      if (!Number.isFinite(idx) || idx < 0) idx = 0;
-      if (idx >= scored.length) idx = scored.length - 1;
-      pickEntry = scored[idx];
-    } else {
-      let idx = Math.floor(rng() * topGroup.length);
-      if (!Number.isFinite(idx) || idx < 0) idx = 0;
-      if (idx >= topGroup.length) idx = topGroup.length - 1;
-      pickEntry = topGroup[idx];
+    const weightedPick = (list) => {
+    if (!list.length) return null;
+    let total = 0;
+    const weights = [];
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i];
+      const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
+      const weight = 1 / (1 + diff);
+      weights.push(weight);
+      total += weight;
     }
+    if (!(total > 0)) return list[0] || null;
+    let r = rng() * total;
+    if (!Number.isFinite(r) || r <= 0) r = total * 0.5;
+    for (let i = 0; i < list.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return list[i];
+    }
+    return list[list.length - 1];
+  };
 
-    return pickEntry ? pickEntry.card : null;
+  let pickEntry;
+  if (rng() < epsilon && scored.length > 1) {
+    pickEntry = weightedPick(scored);
+  } else {
+    pickEntry = weightedPick(topGroup);
+  }
+
+  if (!pickEntry && scored.length) {
+    pickEntry = scored[0];
+  }
+
+  return pickEntry ? pickEntry.card : null;
   }
 
   function simulatePlayout(state, determinization, rootCard, rng) {
@@ -2040,7 +2058,7 @@
             }
           }
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.18 });
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
@@ -2743,17 +2761,36 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
   const tolerance = 0.12;
   const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
 
+  const weightedPick = (list) => {
+    if (!list.length) return null;
+    let total = 0;
+    const weights = [];
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i];
+      const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
+      const weight = 1 / (1 + diff);
+      weights.push(weight);
+      total += weight;
+    }
+    if (!(total > 0)) return list[0] || null;
+    let r = rng() * total;
+    if (!Number.isFinite(r) || r <= 0) r = total * 0.5;
+    for (let i = 0; i < list.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return list[i];
+    }
+    return list[list.length - 1];
+  };
+
   let pickEntry;
   if (rng() < epsilon && scored.length > 1) {
-    let idx = Math.floor(rng() * scored.length);
-    if (!Number.isFinite(idx) || idx < 0) idx = 0;
-    if (idx >= scored.length) idx = scored.length - 1;
-    pickEntry = scored[idx];
+    pickEntry = weightedPick(scored);
   } else {
-    let idx = Math.floor(rng() * topGroup.length);
-    if (!Number.isFinite(idx) || idx < 0) idx = 0;
-    if (idx >= topGroup.length) idx = topGroup.length - 1;
-    pickEntry = topGroup[idx];
+    pickEntry = weightedPick(topGroup);
+  }
+
+  if (!pickEntry && scored.length) {
+    pickEntry = scored[0];
   }
 
   return pickEntry ? pickEntry.card : null;
@@ -2812,7 +2849,7 @@ function simulatePlayout(state, determinization, rootCard, rng) {
             }
           }
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.18 });
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
