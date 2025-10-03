@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         6 Nimmt Tracker
 // @namespace    http://tampermonkey.net/
-// @version      1.3.6
+// @version      1.3.7
 // @description  Minimal build
 // @author       Technical Analyst
 // @homepageURL  https://github.com/RiversGravity/6-nimmt-tracker
@@ -1947,7 +1947,8 @@
 
   function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     if (!hand || !hand.length) return null;
-    const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.12;
+    const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.2;
+    const temperature = Number.isFinite(opts.temperature) ? Math.max(0.05, Math.min(opts.temperature, 1.5)) : 0.45;
     const scored = [];
 
     for (let i = 0; i < hand.length; i++) {
@@ -1970,38 +1971,38 @@
     const topGroup = scored.filter(entry => entry.score <= bestScore + tolerance);
 
     const weightedPick = (list) => {
-    if (!list.length) return null;
-    let total = 0;
-    const weights = [];
-    for (let i = 0; i < list.length; i++) {
-      const entry = list[i];
-      const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
-      const weight = 1 / (1 + diff);
-      weights.push(weight);
-      total += weight;
+      if (!list.length) return null;
+      let total = 0;
+      const weights = [];
+      for (let i = 0; i < list.length; i++) {
+        const entry = list[i];
+        const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
+        const weight = Math.exp(-diff / temperature);
+        weights.push(weight);
+        total += weight;
+      }
+      if (!(total > 0)) return list[0] || null;
+      let r = rng() * total;
+      if (!Number.isFinite(r) || r <= 0) r = total * 0.5;
+      for (let i = 0; i < list.length; i++) {
+        r -= weights[i];
+        if (r <= 0) return list[i];
+      }
+      return list[list.length - 1];
+    };
+
+    let pickEntry = null;
+    if (rng() < epsilon && scored.length > 1) {
+      pickEntry = weightedPick(scored);
+    } else {
+      pickEntry = weightedPick(topGroup);
     }
-    if (!(total > 0)) return list[0] || null;
-    let r = rng() * total;
-    if (!Number.isFinite(r) || r <= 0) r = total * 0.5;
-    for (let i = 0; i < list.length; i++) {
-      r -= weights[i];
-      if (r <= 0) return list[i];
+
+    if (!pickEntry && scored.length) {
+      pickEntry = scored[0];
     }
-    return list[list.length - 1];
-  };
 
-  let pickEntry;
-  if (rng() < epsilon && scored.length > 1) {
-    pickEntry = weightedPick(scored);
-  } else {
-    pickEntry = weightedPick(topGroup);
-  }
-
-  if (!pickEntry && scored.length) {
-    pickEntry = scored[0];
-  }
-
-  return pickEntry ? pickEntry.card : null;
+    return pickEntry ? pickEntry.card : null;
   }
 
   function simulatePlayout(state, determinization, rootCard, rng) {
@@ -2051,14 +2052,14 @@
             card = rootCard;
             forcedCardPending = false;
           } else if (hand.length) {
-            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08 });
+            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08, temperature: 0.35 });
             if (card != null) {
               const idx = hand.indexOf(card);
               if (idx >= 0) hand.splice(idx, 1);
             }
           }
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28 });
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28, temperature: 0.45 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
@@ -2739,7 +2740,8 @@ function pickForcedRowIndex(placement, rows) {
 }
 function chooseCardHeuristic(hand, rows, rng, opts = {}) {
   if (!hand || !hand.length) return null;
-  const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.12;
+  const epsilon = Number.isFinite(opts.epsilon) ? Math.max(0, Math.min(opts.epsilon, 1)) : 0.2;
+  const temperature = Number.isFinite(opts.temperature) ? Math.max(0.05, Math.min(opts.temperature, 1.5)) : 0.45;
   const scored = [];
 
   for (let i = 0; i < hand.length; i++) {
@@ -2768,7 +2770,7 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     for (let i = 0; i < list.length; i++) {
       const entry = list[i];
       const diff = Number.isFinite(entry.score) ? Math.max(0, entry.score - bestScore) : 0;
-      const weight = 1 / (1 + diff);
+      const weight = Math.exp(-diff / temperature);
       weights.push(weight);
       total += weight;
     }
@@ -2782,7 +2784,7 @@ function chooseCardHeuristic(hand, rows, rng, opts = {}) {
     return list[list.length - 1];
   };
 
-  let pickEntry;
+  let pickEntry = null;
   if (rng() < epsilon && scored.length > 1) {
     pickEntry = weightedPick(scored);
   } else {
@@ -2842,14 +2844,14 @@ function simulatePlayout(state, determinization, rootCard, rng) {
             card = rootCard;
             forcedCardPending = false;
           } else if (hand.length) {
-            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08 });
+            card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.08, temperature: 0.35 });
             if (card != null) {
               const idx = hand.indexOf(card);
               if (idx >= 0) hand.splice(idx, 1);
             }
           }
         } else if (hand.length) {
-          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28 });
+          card = chooseCardHeuristic(hand, rows, rng, { epsilon: 0.28, temperature: 0.45 });
           if (card != null) {
             const idx = hand.indexOf(card);
             if (idx >= 0) hand.splice(idx, 1);
